@@ -1,0 +1,231 @@
+name: Build & Release Noto
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Опубликовать релиз в GitHub Releases (false = только сборка артефактов для теста)'
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Имя тега для публикации при ручном запуске (например: v1.0.1, обязательно если publish_release=true)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-desktop:
+    name: Build Windows Desktop Installer (.exe)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          npm ci --legacy-peer-deps
+          node -e "const fs = require('fs'); const targets = ['node_modules/@tailwindcss/node/node_modules/lightningcss', 'node_modules/lightningcss']; const src = 'node_modules/lightningcss-win32-x64-msvc/lightningcss.win32-x64-msvc.node'; targets.forEach(t => { if (fs.existsSync(t) && fs.existsSync(src)) { fs.copyFileSync(src, t + '/lightningcss.win32-x64-msvc.node'); console.log('Copied win32 node binary to ' + t); } });"
+
+      - name: Build web application
+        run: npm run build
+
+      - name: Ensure Windows icons exist
+        shell: bash
+        run: |
+          mkdir -p build
+          if [ ! -f "build/icon.ico" ] && [ -f "public/favicon.ico" ]; then
+            cp public/favicon.ico build/icon.ico
+          fi
+          if [ ! -f "build/icon.png" ] && [ -f "public/icon.png" ]; then
+            cp public/icon.png build/icon.png
+          fi
+
+      - name: Build Windows Installer (.exe)
+        run: npx electron-builder --win --x64 --publish never
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: noto-windows-installer
+          path: release/*.exe
+          if-no-files-found: error
+
+  build-android:
+    name: Build Android Packages (APK & AAB)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: |
+          npm ci --legacy-peer-deps
+
+      - name: Build web application
+        run: npm run build
+
+      - name: Sync Capacitor Android
+        run: npx cap sync android
+
+      - name: Grant execute permissions for Gradle
+        run: chmod +x android/gradlew
+
+      - name: Build Android Release (APK & AAB)
+        run: |
+          cd android
+          ./gradlew assembleRelease bundleRelease --stacktrace
+
+      - name: Sign APK and AAB with Keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 || secrets.KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || secrets.KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || secrets.KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || secrets.KEY_PASSWORD }}
+        run: |
+          mkdir -p release-artifacts
+
+          # 1. Check keystore existence
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "Using release keystore from GitHub Secrets..."
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.keystore
+            KEY_FILE="release.keystore"
+            KS_PASS="${ANDROID_KEYSTORE_PASSWORD}"
+            K_ALIAS="${ANDROID_KEY_ALIAS}"
+            K_PASS="${ANDROID_KEY_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}"
+          else
+            echo "::warning::GitHub Secrets для постоянного ключа не заданы. Будет сгенерирован рабочий ключ подписи для сборки релизных артефактов."
+            keytool -genkeypair -v -keystore release.keystore -alias noto-key -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass notoreleasepass -keypass notoreleasepass \
+              -dname "CN=Noto Digital Notebook, OU=Mobile, O=Noto, L=Worldwide, C=US"
+            KEY_FILE="release.keystore"
+            KS_PASS="notoreleasepass"
+            K_ALIAS="noto-key"
+            K_PASS="notoreleasepass"
+          fi
+
+          # 2. Find Android SDK build-tools (zipalign & apksigner)
+          BUILD_TOOLS_DIR=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          echo "Found Android build-tools: $BUILD_TOOLS_DIR"
+
+          # 3. Align and sign APK
+          RAW_APK=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -f "$RAW_APK" ]; then
+            echo "Processing APK: $RAW_APK"
+            $BUILD_TOOLS_DIR/zipalign -v -p 4 "$RAW_APK" release-artifacts/Noto-aligned.apk || cp "$RAW_APK" release-artifacts/Noto-aligned.apk
+            $BUILD_TOOLS_DIR/apksigner sign --ks "$KEY_FILE" --ks-pass "pass:$KS_PASS" --ks-key-alias "$K_ALIAS" --key-pass "pass:$K_PASS" --out release-artifacts/Noto.apk release-artifacts/Noto-aligned.apk
+            rm -f release-artifacts/Noto-aligned.apk
+            $BUILD_TOOLS_DIR/apksigner verify release-artifacts/Noto.apk
+            echo "APK successfully signed and verified: release-artifacts/Noto.apk"
+          else
+            echo "::error::Release APK not found in outputs!"
+            exit 1
+          fi
+
+          # 4. Sign AAB with jarsigner
+          RAW_AAB=$(find android/app/build/outputs/bundle/release -name "*.aab" | head -n 1)
+          if [ -f "$RAW_AAB" ]; then
+            echo "Processing AAB: $RAW_AAB"
+            cp "$RAW_AAB" release-artifacts/Noto.aab
+            jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore "$KEY_FILE" -storepass "$KS_PASS" -keypass "$K_PASS" release-artifacts/Noto.aab "$K_ALIAS"
+            jarsigner -verify -verbose -certs release-artifacts/Noto.aab
+            echo "AAB successfully signed and verified: release-artifacts/Noto.aab"
+          else
+            echo "::error::Release AAB not found in outputs!"
+            exit 1
+          fi
+
+          rm -f release.keystore
+
+      - name: Upload Android Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: noto-android-packages
+          path: |
+            release-artifacts/Noto.apk
+            release-artifacts/Noto.aab
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish Unified GitHub Release
+    needs: [build-desktop, build-android]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish_release == true)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Release Tag
+        id: resolve-tag
+        env:
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ "$IS_TAG" = "true" ]; then
+            RESOLVED_TAG="$REF_NAME"
+          else
+            if [ -z "$INPUT_TAG" ]; then
+              echo "::error::При ручном запуске с publish_release=true необходимо указать поле release_tag (например: v1.0.1)!"
+              exit 1
+            fi
+            RESOLVED_TAG="$INPUT_TAG"
+          fi
+          echo "resolved_tag=$RESOLVED_TAG" >> $GITHUB_OUTPUT
+          echo "Publishing release with tag: $RESOLVED_TAG"
+
+      - name: Download Windows Installer
+        uses: actions/download-artifact@v4
+        with:
+          name: noto-windows-installer
+          path: release-all/
+
+      - name: Download Android Packages
+        uses: actions/download-artifact@v4
+        with:
+          name: noto-android-packages
+          path: release-all/
+
+      - name: List Release Files
+        run: ls -la release-all/
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-all/*
+          tag_name: ${{ steps.resolve-tag.outputs.resolved_tag }}
+          name: "Noto ${{ steps.resolve-tag.outputs.resolved_tag }}"
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
