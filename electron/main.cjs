@@ -28,44 +28,10 @@ function createWindow() {
     mainWindow.show();
   });
 
-  // Graceful window close: wait for pending saves to finish before destroying window
-  let isClosing = false;
-  mainWindow.on('close', (e) => {
-    if (!isClosing) {
-      e.preventDefault();
-      isClosing = true;
-      mainWindow.webContents
-        .executeJavaScript('window.__NOTO_FLUSH_SAVE__ ? window.__NOTO_FLUSH_SAVE__() : Promise.resolve()')
-        .catch(() => {})
-        .finally(() => {
-          mainWindow.destroy();
-        });
-
-      // Fallback safety timeout (1200ms)
-      setTimeout(() => {
-        if (!mainWindow.isDestroyed()) {
-          mainWindow.destroy();
-        }
-      }, 1200);
-    }
-  });
-
-  // Open external links in user's default browser only for http/https
+  // Open external links in user's default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://') || url.startsWith('http://')) {
-      shell.openExternal(url);
-    }
+    shell.openExternal(url);
     return { action: 'deny' };
-  });
-
-  // Prevent in-window navigation to external web pages
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith('file://')) {
-      event.preventDefault();
-      if (url.startsWith('https://') || url.startsWith('http://')) {
-        shell.openExternal(url);
-      }
-    }
   });
 }
 
