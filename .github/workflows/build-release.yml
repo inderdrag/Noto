@@ -1,67 +1,119 @@
-name: Build & Release
+name: Build & Release Noto
 
 on:
   push:
+    branches: [ "main", "master" ]
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
-  build-web:
-    runs-on: ubuntu-latest
+  build-windows:
+    name: Build Windows (.exe)
+    runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-      - run: npm install
-      - run: npm run build
-      - uses: actions/upload-artifact@v3
-        with:
-          name: web-build
-          path: dist/
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  build-android:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: '18'
-      - uses: android-actions/setup-android@v2
-      - run: npm install
-      - run: npm run build 2>&1 || true
-      - run: mkdir -p build-output && cp -r dist build-output/ 2>&1 || true
-      - uses: actions/upload-artifact@v3
-        if: always()
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build web assets
+        run: npm run build
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0.0" --locked || npm install -D @tauri-apps/cli
+
+      - name: Build Tauri Windows App
+        uses: tauri-apps/tauri-action@v0.5.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: android-build
-          path: build-output/
-
-  release:
-    needs: [build-web, build-android]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/download-artifact@v3
-        with:
-          path: all-artifacts
-
-      - name: List artifacts
-        run: find all-artifacts -type f
-
-      - name: Prepare release files
-        run: |
-          mkdir -p release-files
-          find all-artifacts -type f -exec cp {} release-files/ \;
-          ls -la release-files/
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: release-files/*
+          tagName: v__VERSION__
+          releaseName: 'Noto v__VERSION__'
+          body: 'Автоматическая сборка Noto для Windows (.exe)'
           draft: false
           prerelease: false
-          body: "🎉 Noto Release - Performance Optimized\n\n✅ All checks passed!\n- Web version included\n- Performance optimizations applied"
+
+  build-android:
+    name: Build Android (.apk & .aab)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Web App
+        run: npm run build
+
+      - name: Add Capacitor Android
+        run: npx cap add android || true
+
+      - name: Build Android App Bundle (.aab) and APK
+        run: |
+          cd android
+          ./gradlew bundleRelease assembleRelease
+
+      - name: Upload Android Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-artifacts
+          path: |
+            android/app/build/outputs/bundle/release/app-release.aab
+            android/app/build/outputs/apk/release/app-release-unsigned.apk
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-android]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Android Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: android-release-artifacts
+          path: android-artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            android-artifacts/**/*.aab
+            android-artifacts/**/*.apk
+          body: |
+            ## Noto Release
+            - 🖥️ **Windows (`.exe`)**
+            - 🤖 **Android (`.aab` / `.apk`)**
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
