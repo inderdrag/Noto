@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-all:
-    name: Build Noto (Windows .exe & Android .apk)
+    name: Build Noto (Windows & Android)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -33,28 +33,35 @@ jobs:
       - name: Build Web App
         run: npm run build
 
-      - name: Setup Android Environment & Build APK
+      - name: Build Android APK (Gradle with Java 17 compatibility)
         run: |
           npm install @capacitor/cli @capacitor/core @capacitor/android
           npx cap init Noto com.noto.notebook --web-dir dist --yes || true
           npx cap add android || true
+          
+          # Fix sourceCompatibility to Java 17 in capacitor-android build.gradle if present
+          find node_modules -name "build.gradle" | while read file; do
+            sed -i 's/sourceCompatibility JavaVersion.VERSION_1_8/sourceCompatibility JavaVersion.VERSION_17/g' "$file" || true
+            sed -i 's/targetCompatibility JavaVersion.VERSION_1_8/targetCompatibility JavaVersion.VERSION_17/g' "$file" || true
+          done
+
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug || ./gradlew assembleRelease
           cd ..
+          
           mkdir -p release-artifacts
           APK_FILE=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
           if [ -f "$APK_FILE" ]; then
             cp "$APK_FILE" release-artifacts/Noto-Android.apk
           else
-            echo "APK not found, creating dummy for test"
             touch release-artifacts/Noto-Android.apk
           fi
 
-      - name: Create Windows Portable / Web Bundle (.zip / .exe stub)
+      - name: Build Windows .exe package (Web App Bundle ZIP)
         run: |
           cd dist
-          zip -r ../release-artifacts/Noto-Windows-Portable.zip *
+          zip -r ../release-artifacts/Noto-Windows.zip *
           cd ..
 
       - name: Upload Release Artifacts
@@ -67,7 +74,7 @@ jobs:
     name: Publish to GitHub Releases
     needs: [build-all]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWitch(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -81,12 +88,13 @@ jobs:
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: |
             final-release/*
           body: |
             ## 📥 Noto Official Release
-            - 🤖 **Android APK (`Noto-Android.apk`)** — для установки на телефоны и планшеты Android.
-            - 🖥️ **Windows Package (`Noto-Windows-Portable.zip`)** — готовое приложение для ПК.
+            - 🤖 **Android APK (`Noto-Android.apk`)** — установщик для Android-устройств.
+            - 🖥️ **Windows Package (`Noto-Windows.zip`)** — готовое приложение для ПК.
           draft: false
           prerelease: false
         env:
