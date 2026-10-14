@@ -1,13 +1,20 @@
 import React from 'react';
-import { X, Monitor, Smartphone, Cpu, HardDrive, Cloud } from 'lucide-react';
+import { X, Monitor, Smartphone, Cpu, HardDrive } from 'lucide-react';
 import { NotoIcon } from './NotoLogo';
 
 interface AboutModalProps {
   isOpen: boolean;
   onClose: () => void;
+  showPerformanceOverlay?: boolean;
+  onTogglePerformanceOverlay?: (val: boolean) => void;
 }
 
-export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
+export const AboutModal: React.FC<AboutModalProps> = ({
+  isOpen,
+  onClose,
+  showPerformanceOverlay = false,
+  onTogglePerformanceOverlay,
+}) => {
   if (!isOpen) return null;
 
   return (
@@ -22,7 +29,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
                 Noto — Your digital notebook
               </h3>
               <p className="text-[11px] text-neutral-400">
-                Версия 1.0.1 (Standalone Desktop & Mobile Core)
+                Версия 1.0.0 (Standalone Desktop & Mobile Core)
               </p>
             </div>
           </div>
@@ -44,10 +51,10 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
             <div className="p-2.5 rounded-xl border border-neutral-100 dark:border-neutral-800/80 bg-neutral-50/50 dark:bg-neutral-800/30">
               <div className="flex items-center gap-1.5 font-medium text-neutral-900 dark:text-white mb-0.5">
                 <Monitor className="w-3.5 h-3.5 text-neutral-500" />
-                <span>Windows Desktop (Electron .exe)</span>
+                <span>Windows Desktop (`Noto.exe`)</span>
               </div>
               <p className="text-[11px] text-neutral-400">
-                Сборка через Electron для десктопа с офлайн-хранилищем и полной поддержкой графического планшета и пера.
+                Сборка через легковесный нативный рантайм Tauri v2 (~15 МБ вместо 150 МБ у Electron), интеграция в меню «Пуск» и быстрый старт.
               </p>
             </div>
 
@@ -79,6 +86,19 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
               <p className="text-[11px] text-neutral-400">
                 Полная независимость от интернета. Хранение в IndexedDB и переносимый векторный формат <code>.noto</code>.
               </p>
+            </div>
+
+            <div className="p-2.5 rounded-xl border border-neutral-100 dark:border-neutral-800/80 bg-neutral-50/50 dark:bg-neutral-800/30 flex items-center justify-between">
+              <div className="flex flex-col">
+                <span className="font-medium text-neutral-900 dark:text-white">Показывать производительность</span>
+                <span className="text-[11px] text-neutral-400">Оверлей фреймрейта, времени кадра и объектов</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={showPerformanceOverlay}
+                onChange={(e) => onTogglePerformanceOverlay?.(e.target.checked)}
+                className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer accent-[#6355C7]"
+              />
             </div>
           </div>
         </div>

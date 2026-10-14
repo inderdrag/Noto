@@ -139,7 +139,6 @@ export interface Notebook {
   favorite?: boolean;
   createdAt: number;
   updatedAt: number;
-  deleted?: boolean;
 }
 
 export interface NotoFileFormat {
@@ -147,16 +146,6 @@ export interface NotoFileFormat {
   application: 'Noto';
   exportedAt: number;
   notebook: Notebook;
-}
-
-export interface NotoBackupFormat {
-  version: string;
-  application: 'Noto';
-  type: 'full_backup';
-  exportedAt: number;
-  notebooks: Notebook[];
-  folders?: Folder[];
-  settings?: AppSettings;
 }
 
 export interface HistoryEntry {
@@ -178,6 +167,7 @@ export interface AppSettings {
   defaultGridSpacing: number;
   autosaveIntervalMs: number;
   hardwareAcceleration: boolean;
+  showPerformanceOverlay?: boolean;
 }
 
 export interface SelectionBox {

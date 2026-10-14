@@ -35,6 +35,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultGridSpacing: 24,
   autosaveIntervalMs: 800,
   hardwareAcceleration: true,
+  showPerformanceOverlay: false,
 };
 
 /**

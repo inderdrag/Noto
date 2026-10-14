@@ -210,7 +210,7 @@ export function renderStroke(
 
   if (stroke.tool === 'marker') {
     ctx.globalCompositeOperation = 'multiply';
-    ctx.globalAlpha = Math.min(stroke.opacity, 0.4);
+    ctx.globalAlpha = Math.min(Math.max(stroke.opacity ?? 0.65, 0.5), 0.85);
   } else if (stroke.tool === 'pencil') {
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = Math.min(stroke.opacity * 0.85, 0.85);
@@ -381,63 +381,8 @@ export function renderShape(ctx: CanvasRenderingContext2D, shape: Shape) {
   ctx.restore();
 }
 
-// High-performance LRU-like cache for measured wrapped text lines
-const textWrapCache = new Map<string, string[]>();
-const MAX_WRAP_CACHE_SIZE = 500;
-
 /**
- * Word-wrapping helper for multiline text on page with caching to prevent ctx.measureText overhead
- */
-function getWrappedLines(ctx: CanvasRenderingContext2D, text: string, fontStyle: string, maxWidth: number): string[] {
-  if (!text) return [];
-  const roundedWidth = Math.round(maxWidth);
-  const cacheKey = `${text}_#_${fontStyle}_#_${roundedWidth}`;
-
-  const cached = textWrapCache.get(cacheKey);
-  if (cached) {
-    return cached;
-  }
-
-  const rawParagraphs = text.split('\n');
-  if (roundedWidth <= 0) return rawParagraphs;
-
-  const wrapped: string[] = [];
-  for (const para of rawParagraphs) {
-    if (!para) {
-      wrapped.push('');
-      continue;
-    }
-    const words = para.split(' ');
-    let currentLine = '';
-
-    for (let i = 0; i < words.length; i++) {
-      const word = words[i];
-      const testLine = currentLine ? `${currentLine} ${word}` : word;
-      const metrics = ctx.measureText(testLine);
-
-      if (metrics.width > roundedWidth && currentLine) {
-        wrapped.push(currentLine);
-        currentLine = word;
-      } else {
-        currentLine = testLine;
-      }
-    }
-    if (currentLine) {
-      wrapped.push(currentLine);
-    }
-  }
-
-  if (textWrapCache.size >= MAX_WRAP_CACHE_SIZE) {
-    const firstKey = textWrapCache.keys().next().value;
-    if (firstKey) textWrapCache.delete(firstKey);
-  }
-  textWrapCache.set(cacheKey, wrapped);
-
-  return wrapped;
-}
-
-/**
- * Renders a text object with full-width word-wrapping support
+ * Renders a text object
  */
 export function renderText(ctx: CanvasRenderingContext2D, textObj: TextObject) {
   ctx.save();
@@ -449,19 +394,14 @@ export function renderText(ctx: CanvasRenderingContext2D, textObj: TextObject) {
     textObj.italic ? 'italic' : '',
     textObj.bold ? 'bold' : '',
     `${textObj.fontSize || 16}px`,
-    textObj.fontFamily || 'Inter, system-ui, -apple-system, sans-serif',
+    textObj.fontFamily || 'Inter, sans-serif',
   ]
     .filter(Boolean)
     .join(' ');
 
   ctx.font = fontStyle;
 
-  // Safe fallback for legacy text objects without width
-  const maxWidth = (textObj.width && textObj.width > 50)
-    ? textObj.width
-    : Math.max(300, (textObj.text.length > 40 ? 800 : Math.max(160, textObj.text.length * ((textObj.fontSize || 16) * 0.6) + 40)));
-
-  const lines = getWrappedLines(ctx, textObj.text, fontStyle, maxWidth);
+  const lines = textObj.text.split('\n');
   const lineHeight = (textObj.fontSize || 16) * 1.35;
 
   lines.forEach((line, index) => {
@@ -472,7 +412,7 @@ export function renderText(ctx: CanvasRenderingContext2D, textObj: TextObject) {
     const drawY = textObj.y + index * lineHeight;
     ctx.fillText(line, drawX, drawY);
 
-    if (textObj.underline && line) {
+    if (textObj.underline) {
       const metrics = ctx.measureText(line);
       const textWidth = metrics.width;
       let startX = textObj.x;
@@ -654,7 +594,18 @@ export function renderPage(
     }
   }
 
-  // 4. Texts
+  // 4. Markers (Highlighters) - Rendered beneath texts and pen ink so text is 100% visible and sharp
+  if (page.strokes) {
+    const activeStrokes = page.strokes.filter(
+      (s) => !s.deleted && (!vb || isStrokeInViewport(s, vb))
+    );
+    const markers = activeStrokes.filter((s) => s.tool === 'marker');
+    for (const m of markers) {
+      renderStroke(ctx, m, options?.pressureEnabled ?? true);
+    }
+  }
+
+  // 5. Texts - Rendered on top of markers for crystal clear readability
   if (page.texts) {
     for (const text of page.texts) {
       if (!text.deleted && (!vb || isTextInViewport(text, vb))) {
@@ -663,17 +614,12 @@ export function renderPage(
     }
   }
 
-  // 5. Strokes (markers first, then pens/pencils for crisp layering with viewport culling)
+  // 6. Regular Strokes (pens/pencils) - Rendered on top of markers for crisp ink
   if (page.strokes) {
     const activeStrokes = page.strokes.filter(
       (s) => !s.deleted && (!vb || isStrokeInViewport(s, vb))
     );
-    const markers = activeStrokes.filter((s) => s.tool === 'marker');
     const others = activeStrokes.filter((s) => s.tool !== 'marker');
-
-    for (const m of markers) {
-      renderStroke(ctx, m, options?.pressureEnabled ?? true);
-    }
     for (const s of others) {
       renderStroke(ctx, s, options?.pressureEnabled ?? true);
     }

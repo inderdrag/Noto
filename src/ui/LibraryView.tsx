@@ -15,8 +15,7 @@ import {
   X,
   Sun,
   Moon,
-  Info,
-  Settings as SettingsIcon
+  Info
 } from 'lucide-react';
 import { Notebook, Folder } from '../types';
 import { exportToNotoFile } from '../export/exporter';
@@ -40,7 +39,6 @@ interface LibraryViewProps {
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
   zoom?: number;
-  onOpenSettings?: () => void;
   isMobile?: boolean;
   onOpenAbout?: () => void;
 }
@@ -61,7 +59,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   onToggleTheme,
   onCreateFolder,
   zoom = 1,
-  onOpenSettings,
   isMobile,
   onOpenAbout,
 }) => {
@@ -77,6 +74,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+  const [itemToDelete, setItemToDelete] = useState<{ type: 'notebook' | 'folder'; id: string; title: string } | null>(null);
+  const [mobileActionNotebook, setMobileActionNotebook] = useState<Notebook | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -293,17 +292,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 {isDark ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-neutral-700" />}
               </button>
 
-              {onOpenSettings && (
-                <button
-                  onClick={onOpenSettings}
-                  className={`p-2 rounded-full border transition-colors cursor-pointer ${
-                    isDark ? 'bg-[#181928] border-neutral-700 text-neutral-300' : 'bg-white border-neutral-200 text-neutral-700 shadow-2xs'
-                  }`}
-                  title="Настройки и резервное копирование"
-                >
-                  <SettingsIcon className="w-4 h-4 text-[#6355C7]" />
-                </button>
-              )}
+
 
               {onOpenAbout && (
                 <button
@@ -459,20 +448,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
           {/* Right Action buttons */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-            {onOpenSettings && (
-              <button
-                onClick={onOpenSettings}
-                className={`p-2 rounded-full border transition-all cursor-pointer flex items-center justify-center text-xs ${
-                  isDark
-                    ? 'bg-[#181928] border-neutral-700 text-neutral-300 hover:text-white hover:bg-neutral-800'
-                    : 'bg-white border-[#E0E2EC] text-neutral-700 hover:bg-neutral-50 shadow-2xs'
-                }`}
-                title="Настройки приложения и резервное копирование"
-              >
-                <SettingsIcon className="w-4 h-4 text-[#6355C7]" />
-              </button>
-            )}
-
             <button
               onClick={() => fileInputRef.current?.click()}
               className={`px-3.5 sm:px-5 py-2 text-xs font-medium rounded-full border transition-all cursor-pointer ${
@@ -551,12 +526,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                           tabIndex={0}
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (window.confirm(`Удалить раздел «${folder.name}»? Тетради из этого раздела останутся на месте.`)) {
-                              onDeleteFolder(folder.id);
-                              if (selectedFolderId === folder.id) {
-                                setSelectedFolderId('all');
-                              }
-                            }
+                            setItemToDelete({ type: 'folder', id: folder.id, title: folder.name });
                           }}
                           title="Удалить раздел"
                           className={`p-0.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-opacity ${
@@ -689,86 +659,14 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            setMenuOpenId(isMenuOpen ? null : nb.id);
+                            setMobileActionNotebook(nb);
                           }}
-                          aria-label="Действия"
-                          className="p-1 rounded-lg text-neutral-400 hover:text-neutral-700 dark:hover:text-white shrink-0 cursor-pointer"
+                          aria-label="Действия с тетрадью"
+                          className="p-1 rounded-lg text-neutral-400 hover:text-neutral-700 dark:hover:text-white shrink-0 cursor-pointer active:scale-95"
                         >
                           <MoreVertical className="w-4 h-4" />
                         </button>
                       </div>
-
-                      {/* Context Menu Modal on Mobile */}
-                      {isMenuOpen && (
-                        <>
-                          <div
-                            className="fixed inset-0 z-30"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setMenuOpenId(null);
-                            }}
-                          />
-                          <div className={`absolute right-2 top-full mt-1 w-44 rounded-xl border p-1 z-40 shadow-2xl ${
-                            isDark ? 'bg-[#1C1D2C] border-neutral-700 text-neutral-200' : 'bg-white border-neutral-200 text-neutral-800'
-                          }`}>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onToggleFavorite(nb.id);
-                                setMenuOpenId(null);
-                              }}
-                              className="w-full text-left px-3 py-2 text-xs rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center gap-2 cursor-pointer"
-                            >
-                              <Star className={`w-3.5 h-3.5 ${nb.favorite ? 'fill-amber-400 text-amber-400' : ''}`} />
-                              {nb.favorite ? 'Из избранного' : 'В избранное'}
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setRenamingId(nb.id);
-                                setRenameInput(nb.title);
-                                setMenuOpenId(null);
-                              }}
-                              className="w-full text-left px-3 py-2 text-xs rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center gap-2 cursor-pointer"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" /> Переименовать
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onDuplicateNotebook(nb.id);
-                                setMenuOpenId(null);
-                              }}
-                              className="w-full text-left px-3 py-2 text-xs rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center gap-2 cursor-pointer"
-                            >
-                              <Copy className="w-3.5 h-3.5" /> Копия
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                exportToNotoFile(nb);
-                                setMenuOpenId(null);
-                              }}
-                              className="w-full text-left px-3 py-2 text-xs rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center gap-2 cursor-pointer"
-                            >
-                              <Download className="w-3.5 h-3.5" /> Экспорт
-                            </button>
-                            <div className="border-t my-1 border-neutral-200 dark:border-neutral-700" />
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setMenuOpenId(null);
-                                if (window.confirm(`Удалить тетрадь «${nb.title}»?`)) {
-                                  onDeleteNotebook(nb.id);
-                                }
-                              }}
-                              className="w-full text-left px-3 py-2 text-xs rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 text-red-600 flex items-center gap-2 cursor-pointer font-medium"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" /> Удалить
-                            </button>
-                          </div>
-                        </>
-                      )}
                     </div>
                   );
                 }
@@ -780,6 +678,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       if (renamingId !== nb.id) onOpenNotebook(nb.id);
                     }}
                     className={`p-4 rounded-2xl border transition-all duration-200 flex items-center gap-4 cursor-pointer relative group ${
+                      isMenuOpen ? 'z-30' : 'z-0'
+                    } ${
                       isDark
                         ? 'bg-[#151622] border-neutral-800 hover:border-neutral-700 hover:shadow-lg'
                         : 'bg-white border-[#E8E9F2] hover:border-[#D5D8E6] hover:shadow-md'
@@ -966,9 +866,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setMenuOpenId(null);
-                                if (window.confirm(`Удалить тетрадь «${nb.title}»?`)) {
-                                  onDeleteNotebook(nb.id);
-                                }
+                                setItemToDelete({ type: 'notebook', id: nb.id, title: nb.title });
                               }}
                               className="w-full text-left px-3 py-2 sm:py-1.5 text-xs rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 text-red-600 flex items-center gap-2 cursor-pointer font-medium"
                             >
@@ -1090,6 +988,156 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           <Plus className="w-5 h-5" />
           <span>Новая тетрадь</span>
         </button>
+      )}
+      {/* Mobile Notebook Actions Bottom Sheet */}
+      {mobileActionNotebook && (
+        <div 
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => setMobileActionNotebook(null)}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            className={`w-full max-w-sm rounded-t-3xl sm:rounded-2xl p-5 shadow-2xl border transition-all animate-in slide-in-from-bottom duration-200 ${
+              isDark ? 'bg-[#181928] border-neutral-700 text-white' : 'bg-white border-[#E0E2EC] text-neutral-900'
+            }`}
+          >
+            {/* Header info */}
+            <div className="flex items-center justify-between pb-3 border-b mb-3 border-neutral-200 dark:border-neutral-800">
+              <div className="min-w-0 pr-3">
+                <h3 className="text-base font-bold truncate">{mobileActionNotebook.title}</h3>
+                <p className="text-[11px] text-neutral-400 mt-0.5">
+                  {formatCardDate(mobileActionNotebook.updatedAt)} · {mobileActionNotebook.pages ? mobileActionNotebook.pages.filter((p) => !p.deleted).length : 0} стр.
+                </p>
+              </div>
+              <button
+                onClick={() => setMobileActionNotebook(null)}
+                className="p-1.5 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-400 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1">
+              <button
+                onClick={() => {
+                  onToggleFavorite(mobileActionNotebook.id);
+                  setMobileActionNotebook(null);
+                }}
+                className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800/80 flex items-center gap-3 cursor-pointer text-xs font-medium"
+              >
+                <Star className={`w-4 h-4 ${mobileActionNotebook.favorite ? 'fill-amber-400 text-amber-400' : ''}`} />
+                <span>{mobileActionNotebook.favorite ? 'Убрать из избранного' : 'Добавить в избранное'}</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  const target = mobileActionNotebook;
+                  setMobileActionNotebook(null);
+                  setRenamingId(target.id);
+                  setRenameInput(target.title);
+                }}
+                className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800/80 flex items-center gap-3 cursor-pointer text-xs font-medium"
+              >
+                <Edit3 className="w-4 h-4" />
+                <span>Переименовать</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  onDuplicateNotebook(mobileActionNotebook.id);
+                  setMobileActionNotebook(null);
+                }}
+                className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800/80 flex items-center gap-3 cursor-pointer text-xs font-medium"
+              >
+                <Copy className="w-4 h-4" />
+                <span>Дублировать тетрадь</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  exportToNotoFile(mobileActionNotebook);
+                  setMobileActionNotebook(null);
+                }}
+                className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800/80 flex items-center gap-3 cursor-pointer text-xs font-medium"
+              >
+                <Download className="w-4 h-4" />
+                <span>Экспорт .noto</span>
+              </button>
+
+              <div className="border-t my-2 border-neutral-200 dark:border-neutral-800" />
+
+              <button
+                onClick={() => {
+                  const nb = mobileActionNotebook;
+                  setMobileActionNotebook(null);
+                  setItemToDelete({ type: 'notebook', id: nb.id, title: nb.title });
+                }}
+                className="w-full text-left px-3 py-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 flex items-center gap-3 cursor-pointer text-xs font-bold"
+              >
+                <Trash2 className="w-4 h-4 text-red-500" />
+                <span>Удалить тетрадь</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal (100% reliable in iframes & mobile webviews) */}
+      {itemToDelete && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => setItemToDelete(null)}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            className={`w-full max-w-sm rounded-2xl p-5 shadow-2xl border transition-all ${
+              isDark ? 'bg-[#181928] border-neutral-700 text-white' : 'bg-white border-[#E0E2EC] text-neutral-900'
+            }`}
+          >
+            <h3 className="text-base font-bold mb-2 text-red-500 flex items-center gap-2">
+              <Trash2 className="w-5 h-5" />
+              {itemToDelete.type === 'notebook' ? 'Удалить тетрадь?' : 'Удалить раздел?'}
+            </h3>
+            <p className={`text-xs mb-5 leading-relaxed ${isDark ? 'text-neutral-300' : 'text-neutral-600'}`}>
+              {itemToDelete.type === 'notebook' 
+                ? `Вы уверены, что хотите безвозвратно удалить тетрадь «${itemToDelete.title}»?` 
+                : `Вы уверены, что хотите удалить раздел «${itemToDelete.title}»? Тетради из этого раздела останутся в библиотеке.`}
+            </p>
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setItemToDelete(null)}
+                className={`px-4 py-2 text-xs font-semibold rounded-xl border transition-colors cursor-pointer ${
+                  isDark ? 'border-neutral-700 hover:bg-neutral-800 text-neutral-300' : 'border-neutral-200 hover:bg-neutral-100 text-neutral-700'
+                }`}
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = itemToDelete;
+                  setItemToDelete(null);
+                  if (target.type === 'notebook') {
+                    onDeleteNotebook(target.id);
+                  } else if (onDeleteFolder) {
+                    onDeleteFolder(target.id);
+                    if (selectedFolderId === target.id) {
+                      setSelectedFolderId('all');
+                    }
+                  }
+                }}
+                className="px-4 py-2 text-xs font-semibold rounded-xl bg-red-600 hover:bg-red-700 text-white transition-colors cursor-pointer shadow-sm active:scale-98"
+              >
+                Удалить
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

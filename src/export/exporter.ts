@@ -1,4 +1,4 @@
-import { Notebook, NotoFileFormat, NotoBackupFormat, Page, Folder, AppSettings } from '../types';
+import { Notebook, NotoFileFormat, Page } from '../types';
 import { renderPage } from '../drawing-engine/renderer';
 import { jsPDF } from 'jspdf';
 import { normalizeNotebook } from '../storage/migration';
@@ -120,10 +120,11 @@ export async function exportToNotoFile(notebook: Notebook): Promise<void> {
 }
 
 /**
- * Parses and validates raw JSON text of a .noto notebook file.
+ * Reads and parses a .noto file from user file upload.
  * Backward compatible with v1.0.0, v1.1.0, and unwrapped notebook JSON.
  */
-export function parseNotoJson(text: string): Notebook {
+export async function importNotoFile(file: File): Promise<Notebook> {
+  const text = await file.text();
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -146,7 +147,7 @@ export function parseNotoJson(text: string): Notebook {
     throw new Error('Файл не содержит данных тетради Noto.');
   }
 
-  // Normalize legacy data (fill missing fields, normalize pages, ensure >= 1 page)
+  // Normalize legacy data (fill missing fields like deleted: false and updatedAt)
   const notebook = normalizeNotebook(rawNotebook);
 
   // Assign fresh ID if importing to prevent collision
@@ -156,123 +157,6 @@ export function parseNotoJson(text: string): Notebook {
   notebook.updatedAt = Date.now();
 
   return notebook;
-}
-
-/**
- * Reads and parses a .noto file from user file upload.
- */
-export async function importNotoFile(file: File): Promise<Notebook> {
-  const text = await file.text();
-  return parseNotoJson(text);
-}
-
-/**
- * Exports all notebooks, folders and settings into a single backup file (.json / .notobackup).
- * Works across Desktop and Mobile (Capacitor Filesystem / Share).
- */
-export async function exportAllNotebooksBackup(
-  notebooks: Notebook[],
-  folders: Folder[] = [],
-  settings?: AppSettings
-): Promise<void> {
-  const normalizedNotebooks = notebooks.map(normalizeNotebook);
-  const backup: NotoBackupFormat = {
-    version: '1.1.0',
-    application: 'Noto',
-    type: 'full_backup',
-    exportedAt: Date.now(),
-    notebooks: normalizedNotebooks,
-    folders,
-    settings,
-  };
-
-  const json = JSON.stringify(backup, null, 2);
-  const dateStr = new Date().toISOString().slice(0, 10);
-  const filename = `noto_backup_${dateStr}.json`;
-  await downloadFile(json, filename, 'application/json');
-}
-
-/**
- * Parses and validates full backup JSON text containing all notebooks, folders, and settings.
- */
-export function parseBackupJson(text: string): {
-  notebooks: Notebook[];
-  folders: Folder[];
-  settings?: AppSettings;
-} {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new Error('Файл резервной копии повреждён или не является валидным JSON.');
-  }
-
-  const obj = parsed as Record<string, unknown>;
-  if (!obj || typeof obj !== 'object') {
-    throw new Error('Некорректный формат файла резервной копии.');
-  }
-
-  let rawNotebooks: unknown[] = [];
-  let rawFolders: unknown[] = [];
-  let settings: AppSettings | undefined = undefined;
-
-  if (Array.isArray(obj.notebooks)) {
-    rawNotebooks = obj.notebooks;
-    if (Array.isArray(obj.folders)) {
-      rawFolders = obj.folders;
-    }
-    if (obj.settings && typeof obj.settings === 'object') {
-      settings = obj.settings as AppSettings;
-    }
-  } else if (Array.isArray(obj)) {
-    // Direct array of notebooks
-    rawNotebooks = obj;
-  } else if ('application' in obj && obj.application === 'Noto' && 'notebook' in obj) {
-    // Single notebook wrapped (v1.0.0 per-notebook export)
-    rawNotebooks = [obj.notebook];
-  } else if ('pages' in obj && 'title' in obj) {
-    // Bare single notebook object
-    rawNotebooks = [obj];
-  } else {
-    throw new Error('Файл не содержит распознаваемых данных тетрадей Noto. Проверьте правильность выбранного файла.');
-  }
-
-  if (rawNotebooks.length === 0) {
-    throw new Error('В файле резервной копии не найдено ни одной тетради.');
-  }
-
-  // Strictly validate each notebook structure
-  const validatedNotebooks: Notebook[] = [];
-  for (let i = 0; i < rawNotebooks.length; i++) {
-    const raw = rawNotebooks[i];
-    if (!raw || typeof raw !== 'object') {
-      throw new Error(`Тетрадь #${i + 1} в файле имеет повреждённый формат.`);
-    }
-    const nbObj = raw as Record<string, unknown>;
-    if (!Array.isArray(nbObj.pages)) {
-      throw new Error(`Тетрадь «${nbObj.title || `#${i + 1}`}» не содержит корректного списка страниц (pages).`);
-    }
-    validatedNotebooks.push(normalizeNotebook(raw as Notebook));
-  }
-
-  const folders = (rawFolders as Folder[]).map((f) => ({
-    ...f,
-    updatedAt: f.updatedAt || Date.now(),
-  }));
-
-  return { notebooks: validatedNotebooks, folders, settings };
-}
-
-/**
- * Reads and parses a backup file from user file upload.
- */
-export async function parseBackupFile(file: File): Promise<{
-  notebooks: Notebook[];
-  folders: Folder[];
-  settings?: AppSettings;
-}> {
-  const text = await file.text();
-  return parseBackupJson(text);
 }
 
 /**

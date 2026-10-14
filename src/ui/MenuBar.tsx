@@ -15,8 +15,7 @@ import {
   Grid,
   Sparkles,
   Sun,
-  Moon,
-  Settings as SettingsIcon
+  Moon
 } from 'lucide-react';
 import { ToolType, GridType } from '../types';
 import { NotoIcon } from './NotoLogo';
@@ -26,7 +25,6 @@ interface MenuBarProps {
   onToggleTheme?: () => void;
   documentTitle?: string;
   isSaving?: boolean;
-  onOpenSettings?: () => void;
   onNewNotebook: () => void;
   onNewPage: () => void;
   onImportNoto: () => void;
@@ -42,7 +40,10 @@ interface MenuBarProps {
   onSelectTool?: (tool: ToolType) => void;
   onOpenShortcuts: () => void;
   onOpenAbout: () => void;
+  showPerformanceOverlay?: boolean;
+  onTogglePerformanceOverlay?: () => void;
   isInEditor: boolean;
+  onDeleteCurrentNotebook?: () => void;
 }
 
 export const MenuBar: React.FC<MenuBarProps> = ({
@@ -50,7 +51,6 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   onToggleTheme,
   documentTitle,
   isSaving = false,
-  onOpenSettings,
   onNewNotebook,
   onNewPage,
   onImportNoto,
@@ -65,7 +65,10 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   onSetPaperType,
   onOpenShortcuts,
   onOpenAbout,
+  showPerformanceOverlay,
+  onTogglePerformanceOverlay,
   isInEditor,
+  onDeleteCurrentNotebook,
 }) => {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -178,6 +181,17 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                 >
                   <Download className="w-3.5 h-3.5 text-emerald-500" /> Экспорт PNG
                 </button>
+                {onDeleteCurrentNotebook && (
+                  <>
+                    <div className={`my-1 border-t ${isDark ? 'border-neutral-800' : 'border-neutral-100'}`} />
+                    <button
+                      onClick={() => handleAction(onDeleteCurrentNotebook)}
+                      className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 dark:hover:bg-red-950/30 text-red-600 transition-colors cursor-pointer text-xs font-medium"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-red-500" /> Удалить тетрадь
+                    </button>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -280,6 +294,22 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                 </button>
               </>
             )}
+
+            {onTogglePerformanceOverlay && (
+              <>
+                <div className={`my-1 border-t ${isDark ? 'border-neutral-800' : 'border-neutral-100'}`} />
+                <button
+                  onClick={() => handleAction(onTogglePerformanceOverlay)}
+                  className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors ${itemHover}`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${showPerformanceOverlay ? 'bg-emerald-500' : 'bg-neutral-400'}`} />
+                    Производительность
+                  </span>
+                  <span className="text-[10px] text-neutral-400">{showPerformanceOverlay ? 'Вкл' : 'Выкл'}</span>
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -326,22 +356,9 @@ export const MenuBar: React.FC<MenuBarProps> = ({
             {isSaving ? (
               <span className="text-blue-500 animate-pulse font-medium">Сохранение...</span>
             ) : (
-              <span className={isDark ? 'text-neutral-500' : 'text-neutral-400'}>Сохранено</span>
+              <span className={isDark ? 'text-neutral-500' : 'text-neutral-400'}>Сохранено на устройство</span>
             )}
           </span>
-        )}
-
-        {onOpenSettings && (
-          <button
-            onClick={onOpenSettings}
-            className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] transition-colors cursor-pointer ${
-              isDark ? 'hover:bg-neutral-800 text-neutral-300' : 'hover:bg-neutral-100 text-neutral-700'
-            }`}
-            title="Настройки приложения и резервное копирование"
-          >
-            <SettingsIcon className="w-3.5 h-3.5 text-neutral-400" />
-            <span className="hidden sm:inline text-[10px]">Настройки</span>
-          </button>
         )}
 
         {onToggleTheme && (

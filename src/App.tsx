@@ -9,6 +9,8 @@ import { LibraryView } from './ui/LibraryView';
 import { EditorWorkspace } from './ui/EditorWorkspace';
 import { ShortcutsModal } from './ui/ShortcutsModal';
 import { AboutModal } from './ui/AboutModal';
+import { PerformanceOverlay } from './ui/PerformanceOverlay';
+import { recordSaveStats, isUserInteracting } from './utils/perfMetrics';
 import { 
   Notebook, 
   Folder, 
@@ -24,22 +26,14 @@ import {
   dbSaveFolders, 
   dbGetSettings, 
   dbSaveSettings,
-  saveCrashSnapshot,
   DEFAULT_SETTINGS,
   DEFAULT_PAGE_BACKGROUND,
   getStandardPageDimensions
 } from './storage/db';
-import { 
-  importNotoFile, 
-  exportToNotoFile, 
-  exportNotebookToPdf, 
-  exportPageAsImage,
-  exportAllNotebooksBackup,
-  parseBackupFile
-} from './export/exporter';
+import { importNotoFile, exportToNotoFile, exportNotebookToPdf, exportPageAsImage } from './export/exporter';
 import { App as CapacitorApp } from '@capacitor/app';
-import { SettingsModal } from './ui/SettingsModal';
 import { isMobileDevice } from './utils/platform';
+import { Trash2 } from 'lucide-react';
 
 export default function App() {
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
@@ -62,8 +56,8 @@ export default function App() {
   const [showWelcome, setShowWelcome] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [notebookToDelete, setNotebookToDelete] = useState<Notebook | null>(null);
 
   // View scaling & Menu bar triggers
   const [libraryZoom, setLibraryZoom] = useState(1.0);
@@ -73,8 +67,47 @@ export default function App() {
   const [clearPageTrigger, setClearPageTrigger] = useState<number>(0);
   const [paperTypeTrigger, setPaperTypeTrigger] = useState<{ type: GridType; timestamp: number } | null>(null);
 
-  // Autosave timer
+  // Autosave timer & pending notebook ref
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingSaveNotebookRef = useRef<Notebook | null>(null);
+
+  const flushPendingSave = useCallback(async () => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
+    const toSave = pendingSaveNotebookRef.current;
+    if (toSave) {
+      pendingSaveNotebookRef.current = null;
+      const t0 = performance.now();
+      await dbSaveNotebook(toSave);
+      const t1 = performance.now();
+      const approxBytes = (toSave.pages || []).reduce((acc, p) => acc + (p.strokes?.length || 0) * 128 + 2048, 0);
+      recordSaveStats(t1 - t0, approxBytes);
+      setIsSaving(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        flushPendingSave();
+      }
+    };
+    const handleBlur = () => {
+      flushPendingSave();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('beforeunload', handleVisibility);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('beforeunload', handleVisibility);
+    };
+  }, [flushPendingSave]);
 
   // Toast notifier
   const showToast = (msg: string) => {
@@ -104,6 +137,7 @@ export default function App() {
         if (!hasSeenWelcome) {
           setShowWelcome(true);
         }
+
       } catch (err) {
         console.error('Initialization error:', err);
       }
@@ -133,47 +167,35 @@ export default function App() {
   // Active notebook
   const activeNotebook = notebooks.find((n) => n.id === activeNotebookId) || null;
 
-  // Pending notebook ref for instant flush on close / switch / background
-  const pendingNotebookRef = useRef<Notebook | null>(null);
-
-  const flushSave = useCallback(async () => {
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
-      saveTimeoutRef.current = null;
-    }
-    const pending = pendingNotebookRef.current;
-    if (pending) {
-      pendingNotebookRef.current = null;
-      // Synchronous localStorage crash snapshot guarantees zero data loss on immediate process termination
-      saveCrashSnapshot(pending);
-      await dbSaveNotebook(pending);
-      setIsSaving(false);
-    }
-  }, []);
-
-  // Expose global flush for Electron window close and lifecycle triggers
-  useEffect(() => {
-    (window as any).__NOTO_FLUSH_SAVE__ = flushSave;
-    return () => {
-      delete (window as any).__NOTO_FLUSH_SAVE__;
-    };
-  }, [flushSave]);
-
-  // Handle notebook updates with autosave feedback (800ms debounce)
+  // Handle notebook updates with autosave feedback (1200ms debounce, deferred during active drawing)
   const handleUpdateNotebook = useCallback((updated: Notebook) => {
     setIsSaving(true);
-    pendingNotebookRef.current = updated;
     setNotebooks((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+    pendingSaveNotebookRef.current = updated;
 
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
     }
 
-    saveTimeoutRef.current = setTimeout(async () => {
-      pendingNotebookRef.current = null;
-      await dbSaveNotebook(updated);
-      setIsSaving(false);
-    }, 800);
+    const scheduleSave = (delay: number) => {
+      saveTimeoutRef.current = setTimeout(async () => {
+        // If the user is actively drawing or touching, postpone save to prevent frame drops!
+        if (isUserInteracting()) {
+          scheduleSave(600);
+          return;
+        }
+        pendingSaveNotebookRef.current = null;
+        saveTimeoutRef.current = null;
+        const t0 = performance.now();
+        await dbSaveNotebook(updated);
+        const t1 = performance.now();
+        const approxBytes = (updated.pages || []).reduce((acc, p) => acc + (p.strokes?.length || 0) * 128 + 2048, 0);
+        recordSaveStats(t1 - t0, approxBytes);
+        setIsSaving(false);
+      }, delay);
+    };
+
+    scheduleSave(1200);
   }, []);
 
   // Quick create notebook (Instant 1-click creation directly into full-screen editor)
@@ -305,6 +327,13 @@ export default function App() {
 
   // Delete notebook
   const handleDeleteNotebook = async (id: string) => {
+    if (pendingSaveNotebookRef.current?.id === id) {
+      pendingSaveNotebookRef.current = null;
+    }
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
     const nb = notebooks.find((n) => n.id === id);
     const title = nb?.title || '';
     setNotebooks((prev) => prev.filter((n) => n.id !== id));
@@ -368,6 +397,7 @@ export default function App() {
       return nb;
     });
     setNotebooks(updatedNotebooks);
+
     showToast('Раздел удалён');
   };
 
@@ -378,104 +408,10 @@ export default function App() {
       setNotebooks((prev) => [importedNb, ...prev]);
       await dbSaveNotebook(importedNb);
       setActiveNotebookId(importedNb.id);
+      showToast(`Тетрадь «${importedNb.title}» успешно импортирована`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Ошибка импорта файла .noto';
       showToast(msg);
-    }
-  };
-
-  // Export all notebooks into a backup JSON file
-  const handleExportAllBackup = async () => {
-    await exportAllNotebooksBackup(notebooks, folders, settings);
-    showToast('Резервная копия всех тетрадей создана');
-  };
-
-  // Import full backup from JSON
-  const handleImportBackup = async (file: File, mode: 'merge' | 'replace') => {
-    const backupData = await parseBackupFile(file);
-    if (mode === 'replace') {
-      // 1. Automatically export current library to a backup file before replacement
-      try {
-        await exportAllNotebooksBackup(notebooks, folders, settings);
-        showToast('Создана резервная копия перед заменой');
-      } catch (backupErr) {
-        console.warn('Auto backup download warning:', backupErr);
-      }
-
-      // 2. Keep in-memory snapshot of current state (NOT in sessionStorage, zero size limits)
-      const snapshotNotebooks = notebooks.map(nb => JSON.parse(JSON.stringify(nb)));
-      const snapshotFolders = folders.map(f => JSON.parse(JSON.stringify(f)));
-      const snapshotSettings = { ...settings };
-
-      try {
-        // 3. Write-then-delete order:
-        // First: Write all new imported notebooks into DB
-        for (const nb of backupData.notebooks) {
-          await dbSaveNotebook(nb);
-        }
-        if (backupData.folders.length > 0) {
-          await dbSaveFolders(backupData.folders);
-        }
-        if (backupData.settings) {
-          dbSaveSettings(backupData.settings);
-        }
-
-        // Second: Only AFTER successful writes, delete old notebooks that are not in the new backup
-        const newIds = new Set(backupData.notebooks.map(nb => nb.id));
-        for (const oldNb of snapshotNotebooks) {
-          if (!newIds.has(oldNb.id)) {
-            await dbDeleteNotebook(oldNb.id);
-          }
-        }
-
-        // 4. Commit React state
-        setNotebooks(backupData.notebooks);
-        if (backupData.folders.length > 0) setFolders(backupData.folders);
-        if (backupData.settings) setSettings(backupData.settings);
-
-        showToast(`Библиотека заменена (${backupData.notebooks.length} тетрадей)`);
-      } catch (err) {
-        // Rollback from in-memory snapshot if writing new notebooks fails midway
-        console.error('Error during library replacement, rolling back from in-memory snapshot:', err);
-        for (const originalNb of snapshotNotebooks) {
-          await dbSaveNotebook(originalNb);
-        }
-        await dbSaveFolders(snapshotFolders);
-        dbSaveSettings(snapshotSettings);
-        setNotebooks(snapshotNotebooks);
-        setFolders(snapshotFolders);
-        setSettings(snapshotSettings);
-        throw new Error('Сбой при замене библиотеки. Исходные данные полностью восстановлены.');
-      }
-    } else {
-      // Merge: keep existing notebooks, append imported ones with unique IDs if duplicate
-      const existingIds = new Set(notebooks.map((n) => n.id));
-      const newNotebooks = [...notebooks];
-
-      for (const imported of backupData.notebooks) {
-        if (existingIds.has(imported.id)) {
-          const freshId = `nb_imp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-          imported.id = freshId;
-          imported.title = `${imported.title} (копия)`;
-        }
-        newNotebooks.push(imported);
-        await dbSaveNotebook(imported);
-      }
-
-      setNotebooks(newNotebooks);
-
-      // Merge folders
-      const existingFolderIds = new Set(folders.map((f) => f.id));
-      const mergedFolders = [...folders];
-      for (const f of backupData.folders) {
-        if (!existingFolderIds.has(f.id)) {
-          mergedFolders.push(f);
-        }
-      }
-      setFolders(mergedFolders);
-      await dbSaveFolders(mergedFolders);
-
-      showToast(`Добавлено ${backupData.notebooks.length} тетрадей из копии`);
     }
   };
 
@@ -626,31 +562,6 @@ export default function App() {
     };
   }, [isShortcutsOpen, isAboutOpen, activeNotebookId]);
 
-  // Flush any pending debounced save when window closes or app moves to background (Android)
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      flushSave();
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    window.addEventListener('pagehide', handleBeforeUnload);
-
-    let removeAppStateListener: (() => void) | undefined;
-    CapacitorApp.addListener('appStateChange', (state) => {
-      if (!state.isActive) {
-        flushSave();
-      }
-    }).then((l) => {
-      removeAppStateListener = () => l.remove();
-    }).catch(() => {});
-
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      window.removeEventListener('pagehide', handleBeforeUnload);
-      if (removeAppStateListener) removeAppStateListener();
-    };
-  }, [flushSave]);
-
   return (
     <div 
       data-theme={settings.theme}
@@ -667,7 +578,6 @@ export default function App() {
           onToggleTheme={handleToggleTheme}
           documentTitle={activeNotebook ? activeNotebook.title : 'Библиотека конспектов'}
           isSaving={isSaving}
-          onOpenSettings={() => setIsSettingsOpen(true)}
           onNewNotebook={handleQuickCreateNotebook}
           onNewPage={handleNewPage}
           onImportNoto={() => {
@@ -692,7 +602,16 @@ export default function App() {
           onSelectTool={() => {}}
           onOpenShortcuts={() => setIsShortcutsOpen(true)}
           onOpenAbout={() => setIsAboutOpen(true)}
+          showPerformanceOverlay={!!settings.showPerformanceOverlay}
+          onTogglePerformanceOverlay={() => {
+            const updated = { ...settings, showPerformanceOverlay: !settings.showPerformanceOverlay };
+            setSettings(updated);
+            dbSaveSettings(updated);
+          }}
           isInEditor={!!activeNotebook}
+          onDeleteCurrentNotebook={() => {
+            if (activeNotebook) setNotebookToDelete(activeNotebook);
+          }}
         />
       )}
 
@@ -710,6 +629,10 @@ export default function App() {
           clearPageTrigger={clearPageTrigger}
           paperTypeTrigger={paperTypeTrigger}
           isMobile={isMobile}
+          onDeleteNotebook={(id) => {
+            const nb = notebooks.find((n) => n.id === id);
+            if (nb) setNotebookToDelete(nb);
+          }}
         />
       ) : (
         <LibraryView
@@ -733,7 +656,6 @@ export default function App() {
           theme={settings.theme === 'dark' ? 'dark' : 'light'}
           onToggleTheme={handleToggleTheme}
           zoom={libraryZoom}
-          onOpenSettings={() => setIsSettingsOpen(true)}
           isMobile={isMobile}
           onOpenAbout={() => setIsAboutOpen(true)}
         />
@@ -746,20 +668,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Settings & Local Backup/Restore Modal */}
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        settings={settings}
-        onUpdateSettings={(newSettings) => {
-          setSettings(newSettings);
-          dbSaveSettings(newSettings);
-        }}
-        notebooks={notebooks}
-        folders={folders}
-        onExportAll={handleExportAllBackup}
-        onImportBackup={handleImportBackup}
-      />
+
 
       {/* Keyboard Shortcuts Modal */}
       <ShortcutsModal
@@ -771,7 +680,73 @@ export default function App() {
       <AboutModal
         isOpen={isAboutOpen}
         onClose={() => setIsAboutOpen(false)}
+        showPerformanceOverlay={!!settings.showPerformanceOverlay}
+        onTogglePerformanceOverlay={(val) => {
+          const updated = { ...settings, showPerformanceOverlay: val };
+          setSettings(updated);
+          dbSaveSettings(updated);
+        }}
       />
+
+      {/* Floating Performance Overlay */}
+      {settings.showPerformanceOverlay && (
+        <PerformanceOverlay
+          currentPage={
+            activeNotebook?.pages.find((p) => p.id === activeNotebook.currentPageId) ||
+            activeNotebook?.pages[0]
+          }
+          isDark={settings.theme === 'dark'}
+        />
+      )}
+
+      {/* Universal Notebook Delete Confirmation Modal */}
+      {notebookToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => setNotebookToDelete(null)}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            className={`w-full max-w-sm rounded-2xl p-5 shadow-2xl border transition-all ${
+              settings.theme === 'dark' ? 'bg-[#181928] border-neutral-700 text-white' : 'bg-white border-[#E0E2EC] text-neutral-900'
+            }`}
+          >
+            <h3 className="text-base font-bold mb-2 text-red-500 flex items-center gap-2">
+              <Trash2 className="w-5 h-5" />
+              Удалить тетрадь?
+            </h3>
+            <p className={`text-xs mb-5 leading-relaxed ${settings.theme === 'dark' ? 'text-neutral-300' : 'text-neutral-600'}`}>
+              Вы уверены, что хотите безвозвратно удалить тетрадь «{notebookToDelete.title}»? Все страницы будут удалены с устройства.
+            </p>
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setNotebookToDelete(null)}
+                className={`px-4 py-2 text-xs font-semibold rounded-xl border transition-colors cursor-pointer ${
+                  settings.theme === 'dark'
+                    ? 'border-neutral-700 hover:bg-neutral-800 text-neutral-300'
+                    : 'border-neutral-200 hover:bg-neutral-100 text-neutral-700'
+                }`}
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const id = notebookToDelete.id;
+                  setNotebookToDelete(null);
+                  handleDeleteNotebook(id);
+                }}
+                className="px-4 py-2 text-xs font-semibold rounded-xl bg-red-600 hover:bg-red-700 text-white transition-colors cursor-pointer shadow-sm active:scale-98"
+              >
+                Удалить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

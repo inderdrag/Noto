@@ -1,12 +1,11 @@
 import { ImageObject, Page } from '../types';
 
 /**
- * Image storage utilities for local standalone operation.
- * Images are stored directly in local database (IndexedDB / SQLite) as data URLs
- * or offline blobs, without external cloud dependencies.
+ * 100% Local Image Storage:
+ * All images are stored locally in the notebook state (IndexedDB / SQLite) on the device.
+ * No external database or cloud storage upload.
  */
 
-// Callbacks to notify canvas or editor when an image has been loaded or resolved
 const imageResolvedListeners = new Set<() => void>();
 
 export function subscribeImageResolved(listener: () => void): () => void {
@@ -16,26 +15,22 @@ export function subscribeImageResolved(listener: () => void): () => void {
   };
 }
 
-export function notifyImageResolved(): void {
-  imageResolvedListeners.forEach((listener) => {
-    try {
-      listener();
-    } catch {
-      // Ignore listener error
-    }
-  });
+export function extractStoragePath(_src: string): string | null {
+  return null;
 }
 
-/**
- * Returns image source directly.
- */
+export async function uploadImageToStorage(img: ImageObject): Promise<string> {
+  return img.src;
+}
+
+export async function getSignedImageUrl(srcOrPath: string): Promise<string> {
+  return srcOrPath || '';
+}
+
 export function getResolvedImageUrl(srcOrPath: string): string {
   return srcOrPath || '';
 }
 
-/**
- * Prepares all images on page for local display.
- */
 export async function preparePageImages(page: Page, onResolved?: () => void): Promise<void> {
   if (onResolved) {
     onResolved();

@@ -100,25 +100,26 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       const rows = res.values || [];
 
       if (rows.length === 0) {
-        const starter = createStarterData();
-        const normalizedStarter = starter.notebooks.map((nb) => normalizeNotebook(nb));
-        await this.saveAllNotebooks(normalizedStarter);
-        await this.saveFolders(starter.folders);
-        return normalizedStarter;
+        const hasInitialized =
+          localStorage.getItem('noto_db_initialized') ||
+          localStorage.getItem('noto_seen_welcome');
+        if (!hasInitialized) {
+          const starter = createStarterData();
+          const normalizedStarter = starter.notebooks.map((nb) => normalizeNotebook(nb));
+          await this.saveAllNotebooks(normalizedStarter);
+          await this.saveFolders(starter.folders);
+          localStorage.setItem('noto_db_initialized', 'true');
+          return normalizedStarter;
+        }
+        return [];
+      } else {
+        localStorage.setItem('noto_db_initialized', 'true');
       }
 
-      const validNotebooks: Notebook[] = [];
-      for (const row of rows) {
-        try {
-          const parsed: Notebook = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
-          if (parsed && parsed.id) {
-            validNotebooks.push(normalizeNotebook(parsed));
-          }
-        } catch (err) {
-          console.warn('[SQLiteStorageAdapter] Skipping corrupted notebook entry:', err);
-        }
-      }
-      return validNotebooks;
+      return rows.map((row: { data: string }) => {
+        const parsed: Notebook = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+        return normalizeNotebook(parsed);
+      });
     } catch {
       return this.fallbackAdapter.getAllNotebooks();
     }
@@ -157,6 +158,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
 
   async deleteNotebook(id: string): Promise<void> {
     try {
+      await this.fallbackAdapter.deleteNotebook(id);
       const db = await this.getDb();
       await db.run('DELETE FROM notebooks WHERE id = ?;', [id]);
     } catch {
@@ -234,26 +236,10 @@ export class SQLiteStorageAdapter implements StorageAdapter {
 
   saveCrashSnapshot(notebook: Notebook): void {
     try {
-      // Create a lightweight snapshot: limit images to placeholders if total JSON exceeds safe quota (~1MB)
-      let serialized = JSON.stringify(notebook);
-      if (serialized.length > 1024 * 1024) {
-        // Strip large base64 image data to fit comfortably in localStorage
-        const lightNb: Notebook = {
-          ...notebook,
-          pages: (notebook.pages || []).map((p) => ({
-            ...p,
-            images: (p.images || []).map((img) => ({
-              ...img,
-              src: img.src && img.src.length > 200 ? '' : img.src,
-            })),
-          })),
-        };
-        serialized = JSON.stringify(lightNb);
-      }
-      localStorage.setItem('noto_crash_recovery_nb', serialized);
+      localStorage.setItem('noto_crash_recovery_nb', JSON.stringify(notebook));
       localStorage.setItem('noto_crash_recovery_time', Date.now().toString());
-    } catch (e) {
-      console.warn('Crash snapshot localStorage quota exceeded:', e);
+    } catch {
+      // ignore
     }
     this.getDb().then((db) => {
       db.run(

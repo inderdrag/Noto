@@ -1,9 +1,11 @@
 import React from 'react';
 import { ChevronLeft, ChevronRight, Plus, Trash2 } from 'lucide-react';
-import { Notebook, Page } from '../../types';
+import { Page } from '../../types';
+import { PageThumbnail } from './PageThumbnail';
+import { incrementSidebarRender } from '../../utils/perfMetrics';
 
 interface PagesSidebarProps {
-  notebook: Notebook;
+  pages: Page[];
   currentPageId: string;
   isOpen: boolean;
   theme: 'light' | 'dark';
@@ -14,7 +16,7 @@ interface PagesSidebarProps {
 }
 
 export const PagesSidebar: React.FC<PagesSidebarProps> = React.memo(({
-  notebook,
+  pages,
   currentPageId,
   isOpen,
   theme,
@@ -23,8 +25,9 @@ export const PagesSidebar: React.FC<PagesSidebarProps> = React.memo(({
   onAddPage,
   onDeletePage,
 }) => {
+  incrementSidebarRender();
   const isDark = theme === 'dark';
-  const activePages = notebook.pages.filter((p) => !p.deleted);
+  const activePages = React.useMemo(() => pages.filter((p) => !p.deleted), [pages]);
 
   if (!isOpen) {
     return (
@@ -75,24 +78,12 @@ export const PagesSidebar: React.FC<PagesSidebarProps> = React.memo(({
                     : 'border border-neutral-200 dark:border-neutral-700 hover:border-neutral-300 bg-white dark:bg-neutral-900'
                 }`}
               >
-                {/* Mini paper canvas preview */}
-                <div 
-                  className="h-28 rounded-lg border border-neutral-100 dark:border-neutral-800 p-2 flex flex-col justify-between overflow-hidden relative bg-white shadow-2xs"
-                >
-                  <div className="text-[10px] font-bold text-[#1E3A8A] truncate">
-                    {p.title || `Страница ${idx + 1}`}
-                  </div>
-                  <div className="space-y-1.5 opacity-25">
-                    <div className="h-0.5 bg-neutral-400 w-3/4 rounded-full" />
-                    <div className="h-0.5 bg-neutral-400 w-1/2 rounded-full" />
-                    <div className="h-0.5 bg-neutral-400 w-2/3 rounded-full" />
-                  </div>
-                  {idx === 0 && (
-                    <svg className="w-12 h-6 text-[#1E3A8A] opacity-60 ml-auto" viewBox="0 0 50 30" fill="none">
-                      <path d="M5 5 Q 25 35, 45 5" stroke="currentColor" strokeWidth="2.5" />
-                    </svg>
-                  )}
-                </div>
+                {/* Cached, debounced mini paper preview */}
+                <PageThumbnail
+                  page={p}
+                  title={p.title || `Страница ${idx + 1}`}
+                  isDark={isDark}
+                />
 
                 <div className="flex items-center justify-between text-[11px] font-medium text-neutral-600 dark:text-neutral-300 mt-1.5 px-0.5">
                   <span className="truncate">Страница {idx + 1}</span>
@@ -129,3 +120,5 @@ export const PagesSidebar: React.FC<PagesSidebarProps> = React.memo(({
     </aside>
   );
 });
+
+PagesSidebar.displayName = 'PagesSidebar';

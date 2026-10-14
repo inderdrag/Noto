@@ -1,0 +1,84 @@
+📦 ДЛЯ ЗАГРУЗКИ НА GITHUB (Noto 1.0.0)
+=====================================
+
+ГЛАВНЫЕ ФАЙЛЫ (обязательны):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. noto-performance-fixes.tar.gz (27 KB)
+   └─ Содержит: EditorWorkspace.tsx + PERFORMANCE_FIXES.md
+
+ИНСТРУКЦИИ (выбери одну):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ⚡ QUICK_START.md (1.5 KB) - Если спешишь (5 минут)
+   📚 GITHUB_DEPLOYMENT_GUIDE.md (15 KB) - Полная инструкция (30 минут)
+
+СПРАВОЧНАЯ ИНФОРМАЦИЯ:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   📋 DEPLOYMENT_PACKAGE_README.md - Описание пакета
+   📄 FILES_TO_DOWNLOAD.txt - Этот файл
+
+ИТОГО РАЗМЕР: ~52 KB
+
+
+ПОШАГОВО ЧТО ДЕЛАТЬ:
+=====================================
+
+1. Скачай все файлы (4 шт)
+2. Выбери инструкцию:
+   - Спешишь? → QUICK_START.md
+   - Хочешь понять? → GITHUB_DEPLOYMENT_GUIDE.md
+3. Следуй инструкции по шагам
+
+
+ГЛАВНОЕ ПОМНИ:
+=====================================
+
+✅ DO:
+   • Распаковать tar.gz архив
+   • Изменить версию в package.json на 1.0.0
+   • Протестировать npm run build
+   • Коммитить, тегировать, пушить на GitHub
+   • Удалить v1.0.1 через GitHub UI
+   • Создать Release v1.0.0 через GitHub UI
+
+❌ DON'T:
+   • Не забыть распаковать архив
+   • Не забыть поменять версию
+   • Не забыть про git push перед тагированием
+   • Не забыть удалить v1.0.1
+   • Не забыть создать Release (тег ≠ Release!)
+
+
+ССЫЛКИ:
+=====================================
+
+Твой репозиторий: https://github.com/indebraag/noto
+   • Releases: /releases
+   • Settings: /settings
+   • Actions: /actions
+
+Официальные гайды:
+   • Git: https://git-scm.com/book
+   • GitHub Releases: https://docs.github.com/en/repositories/releasing-projects-on-github
+
+
+ЕСЛИ ЧТО-ТО ПОШЛО НЕ ТАК:
+=====================================
+
+Откат 1 коммита (до push):
+   git reset --hard HEAD~1
+
+Откат после push (новый коммит):
+   git revert HEAD && git push origin main
+
+Удалить неправильный тег:
+   git tag -d v1.0.0
+   git push origin --delete v1.0.0
+
+Удалить неправильный Release:
+   GitHub UI → Releases → Edit → Delete release
+
+
+ВОПРОСЫ?
+=====================================
+
+Смотри: GITHUB_DEPLOYMENT_GUIDE.md → раздел "🆘 Если что-то пошло не так"

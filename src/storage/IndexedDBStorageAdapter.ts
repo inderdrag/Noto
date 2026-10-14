@@ -75,12 +75,22 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
           const list = rawList.map((nb) => normalizeNotebook(nb));
 
           if (list.length === 0) {
-            const starter = createStarterData();
-            const normalizedStarter = starter.notebooks.map((nb) => normalizeNotebook(nb));
-            this.saveAllNotebooks(normalizedStarter);
-            this.saveFolders(starter.folders);
-            resolve(normalizedStarter);
+            const hasInitialized =
+              localStorage.getItem('noto_db_initialized') ||
+              localStorage.getItem('noto_seen_welcome');
+            if (!hasInitialized) {
+              const starter = createStarterData();
+              const normalizedStarter = starter.notebooks.map((nb) => normalizeNotebook(nb));
+              this.saveAllNotebooks(normalizedStarter);
+              this.saveFolders(starter.folders);
+              localStorage.setItem('noto_db_initialized', 'true');
+              resolve(normalizedStarter);
+              return;
+            }
+            resolve([]);
+            return;
           } else {
+            localStorage.setItem('noto_db_initialized', 'true');
             resolve(list);
           }
         };
@@ -100,10 +110,12 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
         const store = tx.objectStore(STORE_NOTEBOOKS);
         const req = store.put(notebook);
         req.onsuccess = () => {
+          resolve();
+        };
+        req.onerror = () => {
           this.fallbackSaveSingleNotebook(notebook);
           resolve();
         };
-        req.onerror = () => reject(req.error);
       });
     } catch {
       this.fallbackSaveSingleNotebook(notebook);
@@ -113,12 +125,18 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
   async saveAllNotebooks(notebooks: Notebook[]): Promise<void> {
     try {
       const db = await this.openDatabase();
-      const tx = db.transaction(STORE_NOTEBOOKS, 'readwrite');
-      const store = tx.objectStore(STORE_NOTEBOOKS);
-      for (const nb of notebooks) {
-        store.put(nb);
-      }
-      tx.oncomplete = () => this.fallbackSaveAllNotebooks(notebooks);
+      return new Promise((resolve) => {
+        const tx = db.transaction(STORE_NOTEBOOKS, 'readwrite');
+        const store = tx.objectStore(STORE_NOTEBOOKS);
+        for (const nb of notebooks) {
+          store.put(nb);
+        }
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => {
+          this.fallbackSaveAllNotebooks(notebooks);
+          resolve();
+        };
+      });
     } catch {
       this.fallbackSaveAllNotebooks(notebooks);
     }
@@ -126,16 +144,17 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
 
   async deleteNotebook(id: string): Promise<void> {
     try {
+      this.fallbackDeleteNotebook(id);
       const db = await this.openDatabase();
-      return new Promise((resolve, reject) => {
+      return new Promise((resolve) => {
         const tx = db.transaction(STORE_NOTEBOOKS, 'readwrite');
         const store = tx.objectStore(STORE_NOTEBOOKS);
         const req = store.delete(id);
-        req.onsuccess = () => {
+        req.onsuccess = () => resolve();
+        req.onerror = () => {
           this.fallbackDeleteNotebook(id);
           resolve();
         };
-        req.onerror = () => reject(req.error);
       });
     } catch {
       this.fallbackDeleteNotebook(id);
@@ -204,25 +223,10 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
 
   saveCrashSnapshot(notebook: Notebook): void {
     try {
-      // Create a lightweight snapshot: strip heavy image data if notebook JSON exceeds ~1MB
-      let serialized = JSON.stringify(notebook);
-      if (serialized.length > 1024 * 1024) {
-        const lightNb: Notebook = {
-          ...notebook,
-          pages: (notebook.pages || []).map((p) => ({
-            ...p,
-            images: (p.images || []).map((img) => ({
-              ...img,
-              src: img.src && img.src.length > 200 ? '' : img.src,
-            })),
-          })),
-        };
-        serialized = JSON.stringify(lightNb);
-      }
-      localStorage.setItem('noto_crash_recovery_nb', serialized);
+      localStorage.setItem('noto_crash_recovery_nb', JSON.stringify(notebook));
       localStorage.setItem('noto_crash_recovery_time', Date.now().toString());
-    } catch (e) {
-      console.warn('Crash snapshot localStorage quota exceeded:', e);
+    } catch {
+      // ignore
     }
   }
 
@@ -255,14 +259,23 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
       const raw = localStorage.getItem('noto_notebooks_backup');
       if (raw) {
         const parsed: Notebook[] = JSON.parse(raw);
-        return parsed.map((nb) => normalizeNotebook(nb));
+        if (Array.isArray(parsed)) {
+          return parsed.map((nb) => normalizeNotebook(nb));
+        }
       }
     } catch {
       // ignore
     }
+    const hasInitialized =
+      localStorage.getItem('noto_db_initialized') ||
+      localStorage.getItem('noto_seen_welcome');
+    if (hasInitialized) {
+      return [];
+    }
     const starter = createStarterData();
     const normalizedStarter = starter.notebooks.map((nb) => normalizeNotebook(nb));
     this.fallbackSaveAllNotebooks(normalizedStarter);
+    localStorage.setItem('noto_db_initialized', 'true');
     return normalizedStarter;
   }
 

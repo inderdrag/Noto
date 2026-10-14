@@ -73,7 +73,7 @@ export const ToolSidebar: React.FC<ToolSidebarProps> = React.memo(({
   }
 
   const toolName = 
-    activeTool === 'marker' ? 'Маркер' :
+    activeTool === 'marker' ? 'Маркер-выделитель' :
     activeTool === 'eraser' ? 'Ластик' :
     activeTool === 'text' ? 'Текст' :
     activeTool === 'select' ? 'Выделение' :
@@ -93,6 +93,24 @@ export const ToolSidebar: React.FC<ToolSidebarProps> = React.memo(({
     { color: '#D69E2E', title: 'Янтарь' },
   ];
 
+  const MARKER_PALETTE = [
+    { color: '#FFE600', title: 'Ярко-жёлтый (Классический)' },
+    { color: '#4ADE80', title: 'Неоновый зелёный' },
+    { color: '#22D3EE', title: 'Неоновый циан' },
+    { color: '#F472B6', title: 'Неоновый розовый' },
+    { color: '#FB923C', title: 'Неоновый оранжевый' },
+    { color: '#A78BFA', title: 'Неоновая лаванда' },
+    { color: '#F87171', title: 'Коралловый' },
+    { color: '#38BDF8', title: 'Небесный' },
+    { color: '#A3E635', title: 'Лайм' },
+  ];
+
+  const currentPalette = activeTool === 'marker' ? MARKER_PALETTE : INK_PALETTE;
+  const paletteTitle = activeTool === 'marker' ? 'ОТТЕНКИ ВЫДЕЛИТЕЛЯ' : 'ОТТЕНКИ ЧЕРНИЛ';
+  const widthPresets = activeTool === 'marker' ? [12, 18, 24, 32, 42, 54] : [1, 2, 3, 5, 8, 12];
+  const minWidth = activeTool === 'marker' ? 6 : 1;
+  const maxWidth = activeTool === 'marker' ? 64 : 30;
+
   const PAPER_PRESETS = [
     { color: '#FFFFFF', name: 'Белая' },
     { color: '#FDFBF7', name: 'Крем' },
@@ -108,7 +126,7 @@ export const ToolSidebar: React.FC<ToolSidebarProps> = React.memo(({
         {/* Header */}
         <div className="flex items-center justify-between pb-1 border-b border-neutral-100 dark:border-neutral-800">
           <span className="text-[11px] font-bold tracking-wider text-neutral-400 uppercase">
-            ПАРАМЕТРЫ ПЕРА
+            {activeTool === 'marker' ? 'ВЫДЕЛИТЕЛЬ ТЕКСТА' : 'ПАРАМЕТРЫ ПЕРА'}
           </span>
           <button
             onClick={onToggleOpen}
@@ -125,14 +143,14 @@ export const ToolSidebar: React.FC<ToolSidebarProps> = React.memo(({
           </h4>
         </div>
 
-        {/* 1. Ink Color Swatches */}
+        {/* 1. Ink / Highlighter Color Swatches */}
         {activeTool !== 'eraser' && (
           <div>
             <label className="text-[11px] font-semibold text-neutral-400 block mb-2">
-              ОТТЕНКИ ЧЕРНИЛ
+              {paletteTitle}
             </label>
             <div className="grid grid-cols-5 gap-2">
-              {INK_PALETTE.map((swatch) => (
+              {currentPalette.map((swatch) => (
                 <button
                   key={swatch.color}
                   onClick={() => onSetStrokeColor(swatch.color)}
@@ -210,14 +228,14 @@ export const ToolSidebar: React.FC<ToolSidebarProps> = React.memo(({
         {activeTool !== 'eraser' && (
           <div>
             <div className="flex items-center justify-between text-xs text-neutral-400 mb-1.5">
-              <span className="text-[11px] font-semibold">ТОЛЩИНА ШТРИХА</span>
+              <span className="text-[11px] font-semibold">ТОЛЩИНА {activeTool === 'marker' ? 'ВЫДЕЛИТЕЛЯ' : 'ШТРИХА'}</span>
               <span className="text-neutral-700 dark:text-neutral-300 font-mono text-xs font-bold">
                 {strokeWidth} px
               </span>
             </div>
             
             <div className="flex items-center gap-1.5 mb-2.5">
-              {[1, 2, 3, 5, 8, 12].map((sz) => (
+              {widthPresets.map((sz) => (
                 <button
                   key={sz}
                   onClick={() => onSetStrokeWidth(sz)}
@@ -235,8 +253,8 @@ export const ToolSidebar: React.FC<ToolSidebarProps> = React.memo(({
             <div className="flex items-center gap-2">
               <input
                 type="range"
-                min="1"
-                max="30"
+                min={minWidth}
+                max={maxWidth}
                 value={strokeWidth}
                 onChange={(e) => onSetStrokeWidth(parseInt(e.target.value, 10))}
                 className="flex-1 accent-[#6355C7] cursor-pointer"
@@ -247,8 +265,8 @@ export const ToolSidebar: React.FC<ToolSidebarProps> = React.memo(({
                 <span 
                   className="rounded-full shrink-0" 
                   style={{ 
-                    width: Math.min(18, Math.max(2, strokeWidth)), 
-                    height: Math.min(18, Math.max(2, strokeWidth)),
+                    width: Math.min(18, Math.max(2, (strokeWidth / maxWidth) * 18)), 
+                    height: Math.min(18, Math.max(2, (strokeWidth / maxWidth) * 18)),
                     backgroundColor: strokeColor 
                   }} 
                 />
@@ -406,3 +424,5 @@ export const ToolSidebar: React.FC<ToolSidebarProps> = React.memo(({
     </aside>
   );
 });
+
+ToolSidebar.displayName = 'ToolSidebar';

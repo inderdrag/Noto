@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { 
   ArrowLeft, 
   ChevronLeft, 
@@ -51,9 +51,8 @@ import {
   HistoryEntry, 
   SelectionBox 
 } from '../types';
-import { renderPage, isColorDark, renderShape, renderStroke, renderSelectionBox, setGlobalImageLoadCallback } from '../drawing-engine/renderer';
-import { preparePageImages, subscribeImageResolved } from '../sync/imageStorage';
-import { strokeIntersectsCircle, sliceStrokeByEraser, pointInRect, smoothPoints, getStrokeBounds, getShapeBounds, distance } from '../drawing-engine/math';
+import { renderPage, isColorDark, renderShape, renderSelectionBox, renderStroke, renderText, setGlobalImageLoadCallback } from '../drawing-engine/renderer';
+import { strokeIntersectsCircle, shapeIntersectsCircle, sliceStrokeByEraser, pointInRect, smoothPoints, getStrokeBounds, getShapeBounds, distance } from '../drawing-engine/math';
 import { exportNotebookToPdf, exportPageAsImage, exportToNotoFile } from '../export/exporter';
 import { NotoIcon } from './NotoLogo';
 import { EditorHeader } from './editor/EditorHeader';
@@ -64,6 +63,7 @@ import { MobileEditorView } from './editor/MobileEditorView';
 import { InlineTextEditor } from './editor/InlineTextEditor';
 import { getStandardPageDimensions } from '../storage/db';
 import { isMobileDevice } from '../utils/platform';
+import { incrementWorkspaceRender, recordPointerMoveTime, recordFrameTime, setUserInteracting } from '../utils/perfMetrics';
 
 interface EditorWorkspaceProps {
   notebook: Notebook;
@@ -77,6 +77,7 @@ interface EditorWorkspaceProps {
   clearPageTrigger?: number;
   paperTypeTrigger?: { type: GridType; timestamp: number } | null;
   isMobile?: boolean;
+  onDeleteNotebook?: (id: string) => void;
 }
 
 const PRESET_STROKE_SIZES = [1, 2, 3, 5, 8, 12, 20, 30];
@@ -143,57 +144,22 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
   clearPageTrigger,
   paperTypeTrigger,
   isMobile: isMobileProp,
+  onDeleteNotebook,
 }) => {
+  incrementWorkspaceRender();
   const isDark = theme === 'dark';
-  const fallbackPage: Page = useMemo(
-    () => ({
-      id: `page_${Date.now()}_init`,
-      title: 'Страница 1',
-      order: 0,
-      width: 800,
-      height: 1150,
-      background: {
-        color: '#FFFFFF',
-        type: 'grid',
-        gridSize: 28,
-        gridColor: '#E2E8F0',
-        gridOpacity: 1,
-        lineWidth: 1,
-      },
-      strokes: [],
-      shapes: [],
-      texts: [],
-      images: [],
-      deleted: false,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }),
-    []
-  );
-
-  const activePages = (notebook.pages || []).filter((p) => !p.deleted);
+  const activePages = React.useMemo(() => notebook.pages.filter((p) => !p.deleted), [notebook.pages]);
   const currentPageIndex = Math.max(
     0,
     activePages.findIndex((p) => p.id === notebook.currentPageId)
   );
-  const currentPage = activePages[currentPageIndex] || activePages[0] || (notebook.pages && notebook.pages[0]) || fallbackPage;
-
-  // If opened notebook has 0 pages, automatically generate and persist the initial blank page
-  useEffect(() => {
-    if (!notebook.pages || notebook.pages.length === 0 || notebook.pages.every((p) => p.deleted)) {
-      onUpdateNotebook({
-        ...notebook,
-        currentPageId: fallbackPage.id,
-        pages: [fallbackPage],
-      });
-    }
-  }, [notebook.id]);
+  const currentPage = activePages[currentPageIndex] || activePages[0] || notebook.pages[0];
 
   // Tool states
   const [activeTool, setActiveTool] = useState<ToolType>('pen');
   const [showToolOptions, setShowToolOptions] = useState(false);
   const [strokeColor, setStrokeColor] = useState(
-    isColorDark(currentPage.background?.color || '#FFFFFF') ? '#F1F5F9' : '#0F172A'
+    isColorDark(currentPage.background.color) ? '#F1F5F9' : '#0F172A'
   );
   const [strokeWidth, setStrokeWidth] = useState(3);
   const [strokeOpacity, setStrokeOpacity] = useState(1);
@@ -215,21 +181,6 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
   // Viewport transforms (Zoom & Pan) - 70% default zoom on entering sheet
   const [scale, setScale] = useState(0.70);
   const [pan, setPan] = useState({ x: 20, y: 30 });
-  const scaleRef = useRef(0.70);
-  const panRef = useRef({ x: 20, y: 30 });
-
-  useEffect(() => {
-    scaleRef.current = scale;
-  }, [scale]);
-
-  useEffect(() => {
-    panRef.current = pan;
-  }, [pan]);
-
-  // High-performance hardware layer cache for committed page elements
-  const pageLayerCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const isPageLayerDirtyRef = useRef(true);
-
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const panStartRef = useRef({ x: 0, y: 0 });
@@ -283,6 +234,28 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
   const startPointRef = useRef<Point | null>(null);
   const eraserPreviewRef = useRef<{ x: number; y: number; radius: number } | null>(null);
 
+  // High-performance Two-Layer Drawing & Incremental Spline Refs
+  const staticCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const staticDirtyRef = useRef(true);
+  const activeStrokeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Selection Transform Preview: cached transformed items WITHOUT updating state
+  const transformPreviewRef = useRef<{
+    transformedStrokes: Map<string, Stroke>;
+    transformedShapes: Map<string, Shape>;
+    transformedTexts: Map<string, TextObject>;
+  } | null>(null);
+
+  // Eraser in-memory working state during drag for zero lag & instantaneous erasing
+  const isErasingRef = useRef(false);
+  const workingStrokesRef = useRef<Stroke[] | null>(null);
+  const workingShapesRef = useRef<Shape[] | null>(null);
+  const workingTextsRef = useRef<TextObject[] | null>(null);
+  const hasErasedAnythingRef = useRef(false);
+
+  // Grid Size Slider: debounce rapid updates
+  const gridSizeDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const lastDrawnPtIndexRef = useRef(0);
+
   // Selection Tool State & Interactive Dragging / Resizing
   type SelectionHandle = 'nw' | 'ne' | 'se' | 'sw' | 'inside' | null;
 
@@ -304,6 +277,86 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
   const [isSelectionColorPickerOpen, setIsSelectionColorPickerOpen] = useState(false);
   const [selectionCursor, setSelectionCursor] = useState<string>('crosshair');
   const selectionTransformRef = useRef<SelectionTransformState | null>(null);
+
+  // Per-tool memory for colors, stroke width, and opacity (Marker defaults to fluorescent yellow 24px)
+  const toolMemoryRef = useRef<Record<string, { color: string; width: number; opacity: number }>>({
+    pen: {
+      color: isColorDark(currentPage.background.color) ? '#F1F5F9' : '#0F172A',
+      width: 3,
+      opacity: 1,
+    },
+    marker: {
+      color: '#FFE600', // Ярко-жёлтый флуоресцентный маркер
+      width: 24,        // Комфортная ширина под строчку текста
+      opacity: 0.65,    // Насыщенная прозрачность (multiply)
+    },
+    pencil: {
+      color: '#475569',
+      width: 2,
+      opacity: 0.85,
+    },
+  });
+
+  const handleSelectTool = useCallback((tool: ToolType) => {
+    // 1. Remember settings for previous tool
+    if (activeTool === 'pen' || activeTool === 'marker' || activeTool === 'pencil') {
+      toolMemoryRef.current[activeTool] = {
+        color: strokeColor,
+        width: strokeWidth,
+        opacity: strokeOpacity,
+      };
+    }
+
+    setActiveTool(tool);
+
+    // 2. Restore settings for newly active tool
+    if (tool === 'pen' || tool === 'marker' || tool === 'pencil') {
+      const memory = toolMemoryRef.current[tool] || (
+        tool === 'marker'
+          ? { color: '#FFE600', width: 24, opacity: 0.65 }
+          : { color: isColorDark(currentPage.background.color) ? '#F1F5F9' : '#0F172A', width: 3, opacity: 1 }
+      );
+      setStrokeColor(memory.color);
+      setStrokeWidth(memory.width);
+      setStrokeOpacity(memory.opacity);
+    }
+
+    if (tool !== 'select') {
+      setSelectionBox(null);
+      setSelectedIds({ strokeIds: [], shapeIds: [], textIds: [] });
+      setIsSelectionColorPickerOpen(false);
+    }
+  }, [activeTool, currentPage.background.color, strokeColor, strokeWidth, strokeOpacity]);
+
+  const handleSetStrokeColor = useCallback((color: string) => {
+    setStrokeColor(color);
+    if (activeTool === 'pen' || activeTool === 'marker' || activeTool === 'pencil') {
+      toolMemoryRef.current[activeTool] = {
+        ...toolMemoryRef.current[activeTool],
+        color,
+      };
+    }
+  }, [activeTool]);
+
+  const handleSetStrokeWidth = useCallback((width: number) => {
+    setStrokeWidth(width);
+    if (activeTool === 'pen' || activeTool === 'marker' || activeTool === 'pencil') {
+      toolMemoryRef.current[activeTool] = {
+        ...toolMemoryRef.current[activeTool],
+        width,
+      };
+    }
+  }, [activeTool]);
+
+  const handleSetStrokeOpacity = useCallback((opacity: number) => {
+    setStrokeOpacity(opacity);
+    if (activeTool === 'pen' || activeTool === 'marker' || activeTool === 'pencil') {
+      toolMemoryRef.current[activeTool] = {
+        ...toolMemoryRef.current[activeTool],
+        opacity,
+      };
+    }
+  }, [activeTool]);
 
   const getSelectionHitHandle = (pt: Point, sel: SelectionBox, tolerance: number = 14): SelectionHandle => {
     if (!sel || sel.width <= 0 || sel.height <= 0) return null;
@@ -502,28 +555,91 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
     }
   }, [history.length, pushHistory]);
 
-  // High-performance offscreen layer cache for full page content
-  const updatePageLayer = useCallback(() => {
-    if (typeof document === 'undefined') return;
-    if (!pageLayerCanvasRef.current) {
-      pageLayerCanvasRef.current = document.createElement('canvas');
+  // Render completed page layer to offscreen canvas
+  const renderStaticLayer = useCallback((targetW: number, targetH: number, dpr: number, displayWidth: number, displayHeight: number) => {
+    let staticCanvas = staticCanvasRef.current;
+    if (!staticCanvas) {
+      staticCanvas = document.createElement('canvas');
+      staticCanvasRef.current = staticCanvas;
     }
-    const layer = pageLayerCanvasRef.current;
-    if (layer.width !== currentPage.width || layer.height !== currentPage.height) {
-      layer.width = currentPage.width;
-      layer.height = currentPage.height;
+    if (staticCanvas.width !== targetW || staticCanvas.height !== targetH) {
+      staticCanvas.width = targetW;
+      staticCanvas.height = targetH;
     }
-    const lCtx = layer.getContext('2d');
-    if (!lCtx) return;
-    lCtx.clearRect(0, 0, layer.width, layer.height);
-    renderPage(lCtx, currentPage, {
-      pressureEnabled: false,
-    });
-    isPageLayerDirtyRef.current = false;
-  }, [currentPage]);
 
-  // Master Canvas Repainting (Broad notebook page with clear boundaries and studio desk contrast)
+    const sCtx = staticCanvas.getContext('2d');
+    if (!sCtx) return;
+
+    sCtx.save();
+    sCtx.scale(dpr, dpr);
+
+    // 1. Contrasting studio desk background
+    sCtx.fillStyle = theme === 'dark' ? '#0E0F17' : '#F7F8FC';
+    sCtx.fillRect(0, 0, displayWidth, displayHeight);
+
+    sCtx.translate(pan.x, pan.y);
+    sCtx.scale(scale, scale);
+
+    const darkPaper = isColorDark(currentPage.background.color);
+    const cornerRadius = 12;
+
+    // 2. Physical paper sheet boundaries & drop-shadow with rounded corners
+    sCtx.save();
+    sCtx.shadowColor = theme === 'dark' ? 'rgba(0, 0, 0, 0.6)' : 'rgba(99, 85, 199, 0.08)';
+    sCtx.shadowBlur = Math.min(24, 24 / scale);
+    sCtx.shadowOffsetY = 6 / scale;
+    sCtx.fillStyle = currentPage.background.color;
+    sCtx.beginPath();
+    sCtx.roundRect(0, 0, currentPage.width, currentPage.height, cornerRadius);
+    sCtx.fill();
+    sCtx.restore();
+
+    // 3. Crisp sheet boundary outline
+    sCtx.save();
+    sCtx.strokeStyle = darkPaper ? 'rgba(255, 255, 255, 0.16)' : 'rgba(0, 0, 0, 0.08)';
+    sCtx.lineWidth = Math.max(1, 1 / scale);
+    sCtx.beginPath();
+    sCtx.roundRect(0, 0, currentPage.width, currentPage.height, cornerRadius);
+    sCtx.stroke();
+    sCtx.restore();
+
+    // 4. Clip to rounded sheet so grid & drawings stay cleanly within rounded paper
+    sCtx.save();
+    sCtx.beginPath();
+    sCtx.roundRect(0, 0, currentPage.width, currentPage.height, cornerRadius);
+    sCtx.clip();
+
+    // 5. Calculate visible viewport bounds in page coordinates for culling
+    const cullingPad = 80;
+    const vpMinX = -pan.x / scale - cullingPad;
+    const vpMinY = -pan.y / scale - cullingPad;
+    const vpMaxX = (displayWidth - pan.x) / scale + cullingPad;
+    const vpMaxY = (displayHeight - pan.y) / scale + cullingPad;
+
+    // 6. Render completed page contents (WITHOUT activeStroke or eraserPreview)
+    // If erasing is active, use workingPageData for zero-delay, flicker-free feedback
+    const activePageData: Page = (workingStrokesRef.current || workingShapesRef.current)
+      ? {
+          ...currentPage,
+          strokes: workingStrokesRef.current || currentPage.strokes,
+          shapes: workingShapesRef.current || currentPage.shapes,
+          texts: workingTextsRef.current || currentPage.texts,
+        }
+      : currentPage;
+
+    renderPage(sCtx, activePageData, {
+      pressureEnabled: true,
+      viewportBounds: { minX: vpMinX, minY: vpMinY, maxX: vpMaxX, maxY: vpMaxY },
+    });
+
+    sCtx.restore(); // clip
+    sCtx.restore(); // pan/scale
+    staticDirtyRef.current = false;
+  }, [currentPage, pan.x, pan.y, scale, theme]);
+
+  // Master Canvas Repainting (Two-layer: instant static blit + incremental active drawing)
   const repaintCanvas = useCallback(() => {
+    const tFrameStart = performance.now();
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -539,83 +655,204 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
     if (canvas.width !== targetW || canvas.height !== targetH) {
       canvas.width = targetW;
       canvas.height = targetH;
+      staticDirtyRef.current = true;
     }
 
-    ctx.save();
-    ctx.scale(dpr, dpr);
-
-    // 1. Contrasting studio desk background
-    ctx.fillStyle = theme === 'dark' ? '#0E0F17' : '#F7F8FC';
-    ctx.fillRect(0, 0, displayWidth, displayHeight);
-
-    const curPan = panRef.current;
-    const curScale = scaleRef.current;
-    ctx.translate(curPan.x, curPan.y);
-    ctx.scale(curScale, curScale);
-
-    const darkPaper = isColorDark(currentPage.background.color);
-    const cornerRadius = 12;
-
-    // 2. Physical paper sheet boundaries & drop-shadow with rounded corners
-    ctx.save();
-    // High-performance optimization: skip expensive blur passes during active drawing/panning
-    if (!isInteractingRef.current) {
-      ctx.shadowColor = theme === 'dark' ? 'rgba(0, 0, 0, 0.6)' : 'rgba(99, 85, 199, 0.08)';
-      ctx.shadowBlur = Math.min(24, 24 / curScale);
-      ctx.shadowOffsetY = 6 / curScale;
-    }
-    ctx.fillStyle = currentPage.background.color;
-    ctx.beginPath();
-    ctx.roundRect(0, 0, currentPage.width, currentPage.height, cornerRadius);
-    ctx.fill();
-    ctx.restore();
-
-    // 3. Crisp sheet boundary outline
-    ctx.save();
-    ctx.strokeStyle = darkPaper ? 'rgba(255, 255, 255, 0.16)' : 'rgba(0, 0, 0, 0.08)';
-    ctx.lineWidth = Math.max(1, 1 / curScale);
-    ctx.beginPath();
-    ctx.roundRect(0, 0, currentPage.width, currentPage.height, cornerRadius);
-    ctx.stroke();
-    ctx.restore();
-
-    // 4. Clip to rounded sheet so grid & drawings stay cleanly within rounded paper
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(0, 0, currentPage.width, currentPage.height, cornerRadius);
-    ctx.clip();
-
-    // 5. Blit pre-rendered page from layer cache in ONE instant call
-    if (isPageLayerDirtyRef.current || !pageLayerCanvasRef.current) {
-      updatePageLayer();
-    }
-    if (pageLayerCanvasRef.current) {
-      ctx.drawImage(pageLayerCanvasRef.current, 0, 0);
+    // 1. Update static offscreen layer only when dirty
+    if (staticDirtyRef.current || !staticCanvasRef.current) {
+      renderStaticLayer(targetW, targetH, dpr, displayWidth, displayHeight);
     }
 
-    // 6. Render active in-progress stroke directly on top
+    // 2. Instant GPU blit of pre-rendered static layer (~0.1ms)
+    if (staticCanvasRef.current) {
+      ctx.drawImage(staticCanvasRef.current, 0, 0);
+    }
+
+    // 3. Incremental rendering of active stroke in progress
     if (activeStrokeRef.current) {
-      renderStroke(ctx, activeStrokeRef.current, false);
+      const stroke = activeStrokeRef.current;
+      const pts = stroke.points;
+
+      if (!activeStrokeCanvasRef.current) {
+        activeStrokeCanvasRef.current = document.createElement('canvas');
+      }
+      const aCanvas = activeStrokeCanvasRef.current;
+      if (aCanvas.width !== targetW || aCanvas.height !== targetH) {
+        aCanvas.width = targetW;
+        aCanvas.height = targetH;
+        lastDrawnPtIndexRef.current = 0;
+      }
+
+      const aCtx = aCanvas.getContext('2d');
+      if (aCtx) {
+        if (lastDrawnPtIndexRef.current === 0) {
+          aCtx.clearRect(0, 0, targetW, targetH);
+        }
+
+        aCtx.save();
+        aCtx.scale(dpr, dpr);
+        aCtx.translate(pan.x, pan.y);
+        aCtx.scale(scale, scale);
+
+        aCtx.beginPath();
+        aCtx.roundRect(0, 0, currentPage.width, currentPage.height, 12);
+        aCtx.clip();
+
+        aCtx.lineCap = 'round';
+        aCtx.lineJoin = 'round';
+        aCtx.strokeStyle = stroke.color;
+        aCtx.fillStyle = stroke.color;
+        aCtx.lineWidth = stroke.width;
+
+        if (stroke.tool === 'marker') {
+          aCtx.globalCompositeOperation = 'source-over';
+          aCtx.globalAlpha = stroke.opacity;
+        } else if (stroke.tool === 'pencil') {
+          aCtx.globalCompositeOperation = 'source-over';
+          aCtx.globalAlpha = Math.min(stroke.opacity * 0.85, 0.85);
+        } else {
+          aCtx.globalCompositeOperation = 'source-over';
+          aCtx.globalAlpha = stroke.opacity;
+        }
+
+        // Incremental spline computation: only draw newly arrived segments
+        const startIdx = lastDrawnPtIndexRef.current;
+        if (pts.length === 1 && startIdx === 0) {
+          const p = pts[0];
+          const r = (stroke.width * ((p.pressure ?? 0.5) * 1.2)) / 2;
+          aCtx.beginPath();
+          aCtx.arc(p.x, p.y, Math.max(1, r), 0, Math.PI * 2);
+          aCtx.fill();
+          lastDrawnPtIndexRef.current = 1;
+        } else if (pts.length === 2 && startIdx <= 1) {
+          aCtx.beginPath();
+          aCtx.moveTo(pts[0].x, pts[0].y);
+          aCtx.lineTo(pts[1].x, pts[1].y);
+          aCtx.stroke();
+          lastDrawnPtIndexRef.current = 2;
+        } else if (pts.length >= 3) {
+          const fromI = Math.max(1, startIdx);
+          const toI = pts.length - 2;
+          for (let i = fromI; i <= toI; i++) {
+            const prevMidX = i === 1 ? pts[0].x : (pts[i - 1].x + pts[i].x) / 2;
+            const prevMidY = i === 1 ? pts[0].y : (pts[i - 1].y + pts[i].y) / 2;
+            const currMidX = (pts[i].x + pts[i + 1].x) / 2;
+            const currMidY = (pts[i].y + pts[i + 1].y) / 2;
+            aCtx.beginPath();
+            aCtx.moveTo(prevMidX, prevMidY);
+            aCtx.quadraticCurveTo(pts[i].x, pts[i].y, currMidX, currMidY);
+            aCtx.stroke();
+          }
+          lastDrawnPtIndexRef.current = pts.length - 1;
+        }
+        aCtx.restore();
+
+        // Blit active stroke layer (for marker, multiply preserves black text and ink underneath)
+        if (stroke.tool === 'marker') {
+          ctx.save();
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.drawImage(aCanvas, 0, 0);
+          ctx.restore();
+        } else {
+          ctx.drawImage(aCanvas, 0, 0);
+        }
+
+        // Render current trailing tip (from last midpoint to pointer tip) on visible canvas
+        if (pts.length >= 3) {
+          const lastMidX = (pts[pts.length - 2].x + pts[pts.length - 1].x) / 2;
+          const lastMidY = (pts[pts.length - 2].y + pts[pts.length - 1].y) / 2;
+          const tipPt = pts[pts.length - 1];
+          ctx.save();
+          ctx.scale(dpr, dpr);
+          ctx.translate(pan.x, pan.y);
+          ctx.scale(scale, scale);
+          ctx.beginPath();
+          ctx.roundRect(0, 0, currentPage.width, currentPage.height, 12);
+          ctx.clip();
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.strokeStyle = stroke.color;
+          ctx.lineWidth = stroke.width;
+          if (stroke.tool === 'marker') {
+            ctx.globalCompositeOperation = 'multiply';
+            ctx.globalAlpha = stroke.opacity;
+          } else if (stroke.tool === 'pencil') {
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = Math.min(stroke.opacity * 0.85, 0.85);
+          } else {
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = stroke.opacity;
+          }
+          ctx.beginPath();
+          ctx.moveTo(lastMidX, lastMidY);
+          ctx.lineTo(tipPt.x, tipPt.y);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
     }
 
-    // Active Shape in progress (with live outline for ALL shapes)
+    // 4. Active Shape in progress
     if (activeShapeRef.current) {
-      const s = activeShapeRef.current;
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.translate(pan.x, pan.y);
+      ctx.scale(scale, scale);
+      ctx.beginPath();
+      ctx.roundRect(0, 0, currentPage.width, currentPage.height, 12);
+      ctx.clip();
       renderShape(ctx, {
-        ...s,
+        ...activeShapeRef.current,
         opacity: 0.9,
       });
+      ctx.restore();
     }
 
-    // Active selection box
+    // 5. Selection Transform Preview (render transformed items WITHOUT full page re-render)
+    if (transformPreviewRef.current && selectionTransformRef.current) {
+      const { transformedStrokes, transformedShapes, transformedTexts } = transformPreviewRef.current;
+
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.translate(pan.x, pan.y);
+      ctx.scale(scale, scale);
+      ctx.beginPath();
+      ctx.roundRect(0, 0, currentPage.width, currentPage.height, 12);
+      ctx.clip();
+
+      // Render preview strokes
+      for (const stroke of transformedStrokes.values()) {
+        renderStroke(ctx, stroke, true);
+      }
+      // Render preview shapes
+      for (const shape of transformedShapes.values()) {
+        renderShape(ctx, shape);
+      }
+      // Render preview texts
+      for (const text of transformedTexts.values()) {
+        renderText(ctx, text);
+      }
+
+      ctx.restore();
+    }
+
+    // 6. Active selection box
     if (selectionBox) {
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.translate(pan.x, pan.y);
+      ctx.scale(scale, scale);
       renderSelectionBox(ctx, selectionBox);
+      ctx.restore();
     }
 
-    // Eraser circle indicator
+    // 7. Eraser circle indicator
     if (eraserPreviewRef.current) {
       const { x, y, radius } = eraserPreviewRef.current;
       ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.translate(pan.x, pan.y);
+      ctx.scale(scale, scale);
       ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
       ctx.fillStyle = 'rgba(239, 68, 68, 0.1)';
       ctx.lineWidth = 1.5;
@@ -627,9 +864,9 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
       ctx.restore();
     }
 
-    ctx.restore(); // restore clip
-    ctx.restore(); // restore pan/scale
-  }, [currentPage, theme, updatePageLayer, selectionBox]);
+    const tFrameEnd = performance.now();
+    recordFrameTime(tFrameEnd - tFrameStart);
+  }, [currentPage, pan, scale, selectionBox, theme, renderStaticLayer]);
 
   // Interactive Render Scheduler:
   // Runs smooth 60fps/120fps requestAnimationFrame loop ONLY during active drawing or pan/zoom.
@@ -638,6 +875,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
   const animFrameIdRef = useRef<number | null>(null);
 
   const startInteractionLoop = useCallback(() => {
+    setUserInteracting(true);
     isInteractingRef.current = true;
     if (animFrameIdRef.current !== null) return;
     const tick = () => {
@@ -652,6 +890,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
   }, [repaintCanvas]);
 
   const stopInteractionLoop = useCallback(() => {
+    setUserInteracting(false);
     isInteractingRef.current = false;
     if (animFrameIdRef.current !== null) {
       cancelAnimationFrame(animFrameIdRef.current);
@@ -663,6 +902,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
 
   // Immediate repaint on reactive state changes (page, pan, scale, selectionBox, theme)
   useEffect(() => {
+    staticDirtyRef.current = true;
     repaintCanvas();
   }, [repaintCanvas]);
 
@@ -670,42 +910,21 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
   useEffect(() => {
     const handleResize = () => {
       setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+      staticDirtyRef.current = true;
       repaintCanvas();
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [repaintCanvas]);
 
-  // Preload and refresh private signed image URLs on page load and periodically before expiration (1 hr TTL)
-  useEffect(() => {
-    let isCancelled = false;
-    const loadImages = async () => {
-      if (currentPage.images && currentPage.images.length > 0) {
-        await preparePageImages(currentPage);
-        if (!isCancelled) {
-          repaintCanvas();
-        }
-      }
-    };
-
-    loadImages();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [currentPage.id, currentPage.images, repaintCanvas]);
-
-  // Repaint canvas when new images complete loading or signed URLs resolve
+  // Repaint canvas when new images complete loading
   useEffect(() => {
     setGlobalImageLoadCallback(() => {
-      repaintCanvas();
-    });
-    const unsub = subscribeImageResolved(() => {
+      staticDirtyRef.current = true;
       repaintCanvas();
     });
     return () => {
       setGlobalImageLoadCallback(null);
-      unsub();
     };
   }, [repaintCanvas]);
 
@@ -716,14 +935,12 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
       const rect = canvas.getBoundingClientRect();
       const rawX = clientX - rect.left;
       const rawY = clientY - rect.top;
-      const curPan = panRef.current;
-      const curScale = scaleRef.current;
       return {
-        x: (rawX - curPan.x) / curScale,
-        y: (rawY - curPan.y) / curScale,
+        x: (rawX - pan.x) / scale,
+        y: (rawY - pan.y) / scale,
       };
     },
-    []
+    [pan.x, pan.y, scale]
   );
 
   // Zoom handling
@@ -1058,6 +1275,17 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
 
     startPointRef.current = pt;
 
+    if (activeTool === 'eraser') {
+      isErasingRef.current = true;
+      workingStrokesRef.current = [...(currentPage.strokes || [])];
+      workingShapesRef.current = [...(currentPage.shapes || [])];
+      workingTextsRef.current = [...(currentPage.texts || [])];
+      hasErasedAnythingRef.current = false;
+      eraserPreviewRef.current = { x: pt.x, y: pt.y, radius: eraserRadius };
+      handleEraserAction(pt);
+      return;
+    }
+
     // Selection move or corner resize handling
     if (activeTool === 'select' && selectionBox && (selectedIds.strokeIds.length > 0 || selectedIds.shapeIds.length > 0 || selectedIds.textIds.length > 0)) {
       const hitTolerance = Math.max(12, 16 / scale);
@@ -1088,20 +1316,22 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
     }
 
     if (activeTool === 'pen' || activeTool === 'pencil' || activeTool === 'marker') {
+      lastDrawnPtIndexRef.current = 0;
+      if (activeStrokeCanvasRef.current) {
+        const aCtx = activeStrokeCanvasRef.current.getContext('2d');
+        if (aCtx) aCtx.clearRect(0, 0, activeStrokeCanvasRef.current.width, activeStrokeCanvasRef.current.height);
+      }
       activeStrokeRef.current = {
         id: `stroke_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
         tool: activeTool,
         points: [pt],
         color: strokeColor,
         width: strokeWidth,
-        opacity: activeTool === 'marker' ? 0.35 : strokeOpacity,
+        opacity: strokeOpacity,
         createdAt: Date.now(),
         updatedAt: Date.now(),
         deleted: false,
       };
-    } else if (activeTool === 'eraser') {
-      eraserPreviewRef.current = { x: pt.x, y: pt.y, radius: eraserRadius };
-      handleEraserAction(pt);
     } else if (['line', 'arrow', 'dashed-line', 'dashed-arrow', 'rect', 'circle', 'triangle', 'star'].includes(activeTool)) {
       activeShapeRef.current = {
         id: `shape_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
@@ -1120,32 +1350,15 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
         deleted: false,
       };
     } else if (activeTool === 'text') {
-      const existingText = (currentPage.texts || []).find((t) =>
-        !t.deleted &&
-        pt.x >= t.x && pt.x <= t.x + (t.width || 800) &&
-        pt.y >= t.y && pt.y <= t.y + (t.height || 60)
-      );
-      if (existingText) {
-        setEditingText({
-          x: existingText.x,
-          y: existingText.y,
-          text: existingText.text,
-          fontSize: existingText.fontSize || 18,
-          color: existingText.color || strokeColor,
-          bold: !!existingText.bold,
-          italic: !!existingText.italic,
-        });
-      } else {
-        setEditingText({
-          x: pt.x,
-          y: pt.y,
-          text: '',
-          fontSize: Math.max(16, strokeWidth * 4),
-          color: strokeColor,
-          bold: false,
-          italic: false,
-        });
-      }
+      setEditingText({
+        x: pt.x,
+        y: pt.y,
+        text: '',
+        fontSize: Math.max(16, strokeWidth * 4),
+        color: strokeColor,
+        bold: false,
+        italic: false,
+      });
     } else if (activeTool === 'select') {
       setSelectedIds({ strokeIds: [], shapeIds: [], textIds: [] });
       setSelectionBox({
@@ -1163,7 +1376,9 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
 
   // Pointer Move with auto-snap to grid for horizontal/vertical lines and smooth interpolation
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // 1. Palm Rejection & Multi-touch Guard
+    const tMoveStart = performance.now();
+    try {
+      // 1. Palm Rejection & Multi-touch Guard
     if (e.pointerType === 'pen') {
       lastPenTimeRef.current = Date.now();
     } else if (e.pointerType === 'touch') {
@@ -1173,10 +1388,10 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
     }
 
     if (isPanning) {
-      panRef.current = {
+      setPan({
         x: e.clientX - panStartRef.current.x,
         y: e.clientY - panStartRef.current.y,
-      };
+      });
       return;
     }
 
@@ -1194,6 +1409,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
     if (!isPointerDownRef.current) return;
 
     // 1. Transforming selection (Moving via center or Resizing via corner handles)
+    // OPTIMIZATION: Build preview in ref WITHOUT triggering state updates or full re-renders
     if (selectionTransformRef.current) {
       const { handle, startPt, initialBox, initialStrokes, initialShapes, initialTexts } = selectionTransformRef.current;
 
@@ -1204,31 +1420,25 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
         const newBox = { ...initialBox, x: initialBox.x + dx, y: initialBox.y + dy };
         setSelectionBox(newBox);
 
-        const selStrokeMap = new Map(initialStrokes.map((s) => [s.id, s]));
-        const selShapeMap = new Map(initialShapes.map((sh) => [sh.id, sh]));
-        const selTextMap = new Map(initialTexts.map((t) => [t.id, t]));
+        // Build transformed preview in memory without React state update
+        const transformedStrokes = new Map<string, Stroke>();
+        const transformedShapes = new Map<string, Shape>();
+        const transformedTexts = new Map<string, TextObject>();
 
-        updateCurrentPage((page) => ({
-          ...page,
-          strokes: (page.strokes || []).map((s) => {
-            const orig = selStrokeMap.get(s.id);
-            if (!orig) return s;
-            return {
-              ...s,
-              points: orig.points.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy })),
-            };
-          }),
-          shapes: (page.shapes || []).map((sh) => {
-            const orig = selShapeMap.get(sh.id);
-            if (!orig) return sh;
-            return { ...sh, x: orig.x + dx, y: orig.y + dy };
-          }),
-          texts: (page.texts || []).map((t) => {
-            const orig = selTextMap.get(t.id);
-            if (!orig) return t;
-            return { ...t, x: orig.x + dx, y: orig.y + dy };
-          }),
-        }));
+        for (const s of initialStrokes) {
+          transformedStrokes.set(s.id, {
+            ...s,
+            points: s.points.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy })),
+          });
+        }
+        for (const sh of initialShapes) {
+          transformedShapes.set(sh.id, { ...sh, x: sh.x + dx, y: sh.y + dy });
+        }
+        for (const t of initialTexts) {
+          transformedTexts.set(t.id, { ...t, x: t.x + dx, y: t.y + dy });
+        }
+
+        transformPreviewRef.current = { transformedStrokes, transformedShapes, transformedTexts };
         return;
       } else {
         // Corner Resize / Масштабирование и увеличение
@@ -1269,66 +1479,63 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
 
         setSelectionBox({ ...initialBox, x: newX, y: newY, width: newW, height: newH });
 
-        const selStrokeMap = new Map(initialStrokes.map((s) => [s.id, s]));
-        const selShapeMap = new Map(initialShapes.map((sh) => [sh.id, sh]));
-        const selTextMap = new Map(initialTexts.map((t) => [t.id, t]));
+        // Build transformed preview in memory WITHOUT React state update
+        const transformedStrokes = new Map<string, Stroke>();
+        const transformedShapes = new Map<string, Shape>();
+        const transformedTexts = new Map<string, TextObject>();
 
-        updateCurrentPage((page) => ({
-          ...page,
-          strokes: (page.strokes || []).map((s) => {
-            const orig = selStrokeMap.get(s.id);
-            if (!orig) return s;
-            return {
-              ...s,
-              width: Math.max(1, orig.width * uniformScale),
-              points: orig.points.map((p) => ({
-                ...p,
-                x: newX + (p.x - initialBox.x) * scaleX,
-                y: newY + (p.y - initialBox.y) * scaleY,
-              })),
-            };
-          }),
-          shapes: (page.shapes || []).map((sh) => {
-            const orig = selShapeMap.get(sh.id);
-            if (!orig) return sh;
-            return {
-              ...sh,
-              x: newX + (orig.x - initialBox.x) * scaleX,
-              y: newY + (orig.y - initialBox.y) * scaleY,
-              width: orig.width * scaleX,
-              height: orig.height * scaleY,
-              strokeWidth: Math.max(1, orig.strokeWidth * uniformScale),
-            };
-          }),
-          texts: (page.texts || []).map((t) => {
-            const orig = selTextMap.get(t.id);
-            if (!orig) return t;
-            return {
-              ...t,
-              x: newX + (orig.x - initialBox.x) * scaleX,
-              y: newY + (orig.y - initialBox.y) * scaleY,
-              fontSize: Math.max(8, Math.round(orig.fontSize * uniformScale)),
-              width: orig.width ? orig.width * scaleX : orig.width,
-              height: orig.height ? orig.height * scaleY : orig.height,
-            };
-          }),
-        }));
+        for (const s of initialStrokes) {
+          transformedStrokes.set(s.id, {
+            ...s,
+            width: Math.max(1, s.width * uniformScale),
+            points: s.points.map((p) => ({
+              ...p,
+              x: newX + (p.x - initialBox.x) * scaleX,
+              y: newY + (p.y - initialBox.y) * scaleY,
+            })),
+          });
+        }
+        for (const sh of initialShapes) {
+          transformedShapes.set(sh.id, {
+            ...sh,
+            x: newX + (sh.x - initialBox.x) * scaleX,
+            y: newY + (sh.y - initialBox.y) * scaleY,
+            width: sh.width * scaleX,
+            height: sh.height * scaleY,
+            strokeWidth: Math.max(1, sh.strokeWidth * uniformScale),
+          });
+        }
+        for (const t of initialTexts) {
+          transformedTexts.set(t.id, {
+            ...t,
+            x: newX + (t.x - initialBox.x) * scaleX,
+            y: newY + (t.y - initialBox.y) * scaleY,
+            fontSize: Math.max(8, Math.round(t.fontSize * uniformScale)),
+            width: t.width ? t.width * scaleX : t.width,
+            height: t.height ? t.height * scaleY : t.height,
+          });
+        }
+
+        transformPreviewRef.current = { transformedStrokes, transformedShapes, transformedTexts };
         return;
       }
     }
 
-    // Update dynamic cursor when hovering over active selection box
-    if (activeTool === 'select' && selectionBox && !isPointerDownRef.current) {
+    // Update dynamic cursor when hovering over active selection box (ONLY if NOT drawing/erasing)
+    if (!isPointerDownRef.current && activeTool === 'select' && selectionBox) {
       const hitTolerance = Math.max(12, 16 / scale);
       const h = getSelectionHitHandle(pt, selectionBox, hitTolerance);
+      let newCursor = 'crosshair';
       if (h === 'nw' || h === 'se') {
-        setSelectionCursor('nwse-resize');
+        newCursor = 'nwse-resize';
       } else if (h === 'ne' || h === 'sw') {
-        setSelectionCursor('nesw-resize');
+        newCursor = 'nesw-resize';
       } else if (h === 'inside') {
-        setSelectionCursor('move');
-      } else {
-        setSelectionCursor('crosshair');
+        newCursor = 'move';
+      }
+      // Only update if actually changed (avoid unnecessary re-render)
+      if (selectionCursor !== newCursor) {
+        setSelectionCursor(newCursor);
       }
     } else if (selectionCursor !== 'crosshair' && !isPointerDownRef.current) {
       setSelectionCursor('crosshair');
@@ -1432,16 +1639,20 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
         imageIds: [],
       });
     }
+    } finally {
+      recordPointerMoveTime(performance.now() - tMoveStart);
+    }
   };
 
   // Pointer Up
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    stopInteractionLoop();
+
     if (e.pointerType === 'pen') {
       isPenActiveRef.current = false;
       lastPenTimeRef.current = Date.now();
     } else if (e.pointerType === 'touch') {
       if (isPenActiveRef.current || (Date.now() - lastPenTimeRef.current < 800) || touchDistanceRef.current !== null) {
-        stopInteractionLoop();
         return;
       }
     }
@@ -1457,14 +1668,52 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
 
     if (isPanning) {
       setIsPanning(false);
-      setPan({ ...panRef.current });
-      stopInteractionLoop();
+      return;
+    }
+
+    if (isErasingRef.current) {
+      isErasingRef.current = false;
+      if (hasErasedAnythingRef.current && workingStrokesRef.current && workingShapesRef.current) {
+        const finalStrokes = workingStrokesRef.current;
+        const finalShapes = workingShapesRef.current;
+        const finalTexts = workingTextsRef.current || currentPage.texts || [];
+        updateCurrentPage(
+          (page) => ({
+            ...page,
+            strokes: finalStrokes,
+            shapes: finalShapes,
+            texts: finalTexts,
+          }),
+          'Стереть ластиком'
+        );
+        staticDirtyRef.current = true;
+      }
+      workingStrokesRef.current = null;
+      workingShapesRef.current = null;
+      workingTextsRef.current = null;
+      hasErasedAnythingRef.current = false;
       return;
     }
 
     if (selectionTransformRef.current) {
       const handle = selectionTransformRef.current.handle;
+      const { initialStrokes, initialShapes, initialTexts, initialBox } = selectionTransformRef.current;
+
       selectionTransformRef.current = null;
+
+      // Apply the transformation stored in preview to actual state
+      if (transformPreviewRef.current) {
+        const { transformedStrokes, transformedShapes, transformedTexts } = transformPreviewRef.current;
+        transformPreviewRef.current = null;
+
+        // Update page with transformed items
+        updateCurrentPage((page) => ({
+          ...page,
+          strokes: (page.strokes || []).map((s) => transformedStrokes.get(s.id) || s),
+          shapes: (page.shapes || []).map((sh) => transformedShapes.get(sh.id) || sh),
+          texts: (page.texts || []).map((t) => transformedTexts.get(t.id) || t),
+        }));
+      }
       pushHistory(handle === 'inside' ? 'Переместить выделенное' : 'Масштабировать выделенное');
 
       // Update selection bounding box to snuggly fit transformed items
@@ -1474,8 +1723,6 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
           setSelectionBox(tightBox);
         }
       }
-      isPageLayerDirtyRef.current = true;
-      stopInteractionLoop();
       return;
     }
 
@@ -1484,24 +1731,29 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
       if (stroke.points.length >= 3) {
         stroke.points = smoothPoints(stroke.points);
       }
-      isPageLayerDirtyRef.current = true;
       updateCurrentPage((page) => ({
         ...page,
         strokes: [...(page.strokes || []), stroke],
       }), 'Draw stroke');
       activeStrokeRef.current = null;
+      lastDrawnPtIndexRef.current = 0;
+      if (activeStrokeCanvasRef.current) {
+        const aCtx = activeStrokeCanvasRef.current.getContext('2d');
+        if (aCtx) aCtx.clearRect(0, 0, activeStrokeCanvasRef.current.width, activeStrokeCanvasRef.current.height);
+      }
+      staticDirtyRef.current = true;
     }
 
     if (activeShapeRef.current) {
       const shape = activeShapeRef.current;
       if (Math.abs(shape.width) > 2 || Math.abs(shape.height) > 2) {
-        isPageLayerDirtyRef.current = true;
         updateCurrentPage((page) => ({
           ...page,
           shapes: [...(page.shapes || []), shape],
         }), 'Add shape');
       }
       activeShapeRef.current = null;
+      staticDirtyRef.current = true;
     }
 
     if (activeTool === 'select' && selectionBox) {
@@ -1538,96 +1790,86 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
         }
       }
     }
-
-    // Stop interaction loop after state updates have committed
-    stopInteractionLoop();
   };
+
+  // Eraser engine (real-time, zero-delay, erases markers, shapes, and strokes)
   const handleEraserAction = (center: Point) => {
+    if (!workingStrokesRef.current || !workingShapesRef.current) {
+      workingStrokesRef.current = [...(currentPage.strokes || [])];
+      workingShapesRef.current = [...(currentPage.shapes || [])];
+      workingTextsRef.current = [...(currentPage.texts || [])];
+    }
     const now = Date.now();
+    let hasErased = false;
+
+    // 1. Erase Shapes (both partial & object eraser erase shapes when eraser touches them)
+    const shapes = workingShapesRef.current;
+    for (let i = 0; i < shapes.length; i++) {
+      const sh = shapes[i];
+      if (!sh.deleted && shapeIntersectsCircle(sh, center, eraserRadius)) {
+        shapes[i] = { ...sh, deleted: true, updatedAt: now };
+        hasErased = true;
+      }
+    }
+
+    // 2. Erase Strokes & Markers (Markers erase as highlights or slices; pens/pencils slice or object-erase)
+    const strokes = workingStrokesRef.current;
     if (eraserMode === 'object') {
-      let hasErased = false;
-      const updatedStrokes = (currentPage.strokes || []).map((s) => {
+      for (let i = 0; i < strokes.length; i++) {
+        const s = strokes[i];
         if (!s.deleted && strokeIntersectsCircle(s, center, eraserRadius)) {
+          strokes[i] = { ...s, deleted: true, updatedAt: now };
           hasErased = true;
-          return { ...s, deleted: true, updatedAt: now };
         }
-        return s;
-      });
-
-      const updatedShapes = (currentPage.shapes || []).map((sh) => {
-        if (!sh.deleted) {
-          const cx = sh.x + sh.width / 2;
-          const cy = sh.y + sh.height / 2;
-          const dist = Math.hypot(cx - center.x, cy - center.y);
-          const intersects = dist < eraserRadius + Math.max(Math.abs(sh.width), Math.abs(sh.height)) / 2;
-          if (intersects) {
-            hasErased = true;
-            return { ...sh, deleted: true, updatedAt: now };
-          }
-        }
-        return sh;
-      });
-
-      const updatedTexts = (currentPage.texts || []).map((t) => {
-        if (!t.deleted) {
-          const w = t.width || 120;
-          const h = t.height || 40;
-          const cx = t.x + w / 2;
-          const cy = t.y + h / 2;
-          const dist = Math.hypot(cx - center.x, cy - center.y);
-          const intersects = dist < eraserRadius + Math.max(w, h) / 2;
-          if (intersects) {
-            hasErased = true;
-            return { ...t, deleted: true, updatedAt: now };
-          }
-        }
-        return t;
-      });
-
-      const updatedImages = (currentPage.images || []).map((img) => {
-        if (!img.deleted) {
-          const cx = img.x + img.width / 2;
-          const cy = img.y + img.height / 2;
-          const dist = Math.hypot(cx - center.x, cy - center.y);
-          const intersects = dist < eraserRadius + Math.max(img.width, img.height) / 2;
-          if (intersects) {
-            hasErased = true;
-            return { ...img, deleted: true, updatedAt: now };
-          }
-        }
-        return img;
-      });
-
-      if (hasErased) {
-        updateCurrentPage((page) => ({
-          ...page,
-          strokes: updatedStrokes,
-          shapes: updatedShapes,
-          texts: updatedTexts,
-          images: updatedImages,
-        }));
       }
     } else {
-      let hasErased = false;
+      // Partial mode: slice strokes and markers
       const newStrokes: Stroke[] = [];
-
-      for (const stroke of currentPage.strokes || []) {
+      let strokeChanged = false;
+      for (let i = 0; i < strokes.length; i++) {
+        const stroke = strokes[i];
         if (!stroke.deleted && strokeIntersectsCircle(stroke, center, eraserRadius)) {
+          strokeChanged = true;
           hasErased = true;
           newStrokes.push({ ...stroke, deleted: true, updatedAt: now });
           const pieces = sliceStrokeByEraser(stroke, center, eraserRadius);
-          newStrokes.push(...pieces.map((p) => ({ ...p, deleted: false, updatedAt: now })));
+          for (const p of pieces) {
+            newStrokes.push({ ...p, deleted: false, updatedAt: now });
+          }
         } else {
           newStrokes.push(stroke);
         }
       }
-
-      if (hasErased) {
-        updateCurrentPage((page) => ({
-          ...page,
-          strokes: newStrokes,
-        }));
+      if (strokeChanged) {
+        workingStrokesRef.current = newStrokes;
       }
+    }
+
+    // 3. Texts and Images (object mode)
+    if (eraserMode === 'object' && workingTextsRef.current) {
+      const texts = workingTextsRef.current;
+      for (let i = 0; i < texts.length; i++) {
+        const t = texts[i];
+        if (!t.deleted) {
+          const w = t.width || 120;
+          const h = t.height || 40;
+          if (
+            center.x >= t.x - eraserRadius &&
+            center.x <= t.x + w + eraserRadius &&
+            center.y >= t.y - eraserRadius &&
+            center.y <= t.y + h + eraserRadius
+          ) {
+            texts[i] = { ...t, deleted: true, updatedAt: now };
+            hasErased = true;
+          }
+        }
+      }
+    }
+
+    if (hasErased) {
+      hasErasedAnythingRef.current = true;
+      staticDirtyRef.current = true;
+      repaintCanvas();
     }
   };
 
@@ -1684,7 +1926,6 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
     }
 
     if (e.touches.length >= 2 && touchDistanceRef.current !== null && touchMidpointRef.current !== null) {
-      if (e.cancelable) e.preventDefault();
       const t1 = e.touches[0];
       const t2 = e.touches[1];
       const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
@@ -1708,8 +1949,8 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
       const newPanX = curMidCanvasX - pageX * newScale;
       const newPanY = curMidCanvasY - pageY * newScale;
 
-      scaleRef.current = newScale;
-      panRef.current = { x: newPanX, y: newPanY };
+      setScale(newScale);
+      setPan({ x: newPanX, y: newPanY });
     }
   };
 
@@ -1717,8 +1958,6 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
     if (e.touches.length < 2) {
       touchDistanceRef.current = null;
       touchMidpointRef.current = null;
-      setScale(scaleRef.current);
-      setPan({ ...panRef.current });
     }
     if (e.touches.length === 0) {
       stopInteractionLoop();
@@ -1738,14 +1977,14 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
         else handleUndo();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
         handleRedo();
-      } else if (e.key === '1') setActiveTool('pen');
-      else if (e.key === '2') setActiveTool('pencil');
-      else if (e.key === '3') setActiveTool('marker');
-      else if (e.key === '4') setActiveTool('eraser');
-      else if (e.key === '5') setActiveTool('rect');
-      else if (e.key.toLowerCase() === 't') setActiveTool('text');
-      else if (e.key.toLowerCase() === 'v') setActiveTool('select');
-      else if (e.key.toLowerCase() === 'h') setActiveTool('pan');
+      } else if (e.key === '1') handleSelectTool('pen');
+      else if (e.key === '2') handleSelectTool('pencil');
+      else if (e.key === '3') handleSelectTool('marker');
+      else if (e.key === '4') handleSelectTool('eraser');
+      else if (e.key === '5') handleSelectTool('rect');
+      else if (e.key.toLowerCase() === 't') handleSelectTool('text');
+      else if (e.key.toLowerCase() === 'v') handleSelectTool('select');
+      else if (e.key.toLowerCase() === 'h') handleSelectTool('pan');
       else if (e.key === 'Delete' || e.key === 'Backspace') {
         handleDeleteSelected();
       } else if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
@@ -1854,20 +2093,17 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
   };
 
   const handleFinishEditingText = (finalText?: string) => {
-    const textToCommit = finalText !== undefined ? finalText : (editingText?.text || '');
-    if (editingText && textToCommit.trim()) {
-      // Full available page width (with page margins)
-      const pageMargin = 32;
-      const textWidth = Math.max(300, currentPage.width - (pageMargin * 2));
+    const textVal = finalText !== undefined ? finalText : (editingText?.text || '');
+    if (editingText && textVal.trim()) {
       const newTextObj: TextObject = {
         id: `txt_${Date.now()}`,
-        x: pageMargin,
-        y: Math.max(pageMargin, Math.min(editingText.y, currentPage.height - 80)),
-        width: textWidth,
-        height: Math.max(60, textToCommit.split('\n').length * (editingText.fontSize * 1.35) + 20),
-        text: textToCommit,
+        x: editingText.x,
+        y: editingText.y,
+        width: Math.max(160, textVal.length * 9),
+        height: 50,
+        text: textVal,
         fontSize: editingText.fontSize,
-        fontFamily: 'Inter, system-ui, sans-serif',
+        fontFamily: 'Inter, sans-serif',
         color: editingText.color,
         bold: editingText.bold,
         italic: editingText.italic,
@@ -1882,13 +2118,6 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
     }
     setEditingText(null);
   };
-
-  const handleDebouncedSaveText = useCallback((latestText: string) => {
-    setEditingText((prev) => {
-      if (!prev) return null;
-      return { ...prev, text: latestText };
-    });
-  }, []);
 
   const currentRulingName = RULING_TYPES.find((r) => r.id === currentPage.background.type)?.name || 'Клетка';
   const hasSelectedItems = selectedIds.strokeIds.length > 0 || selectedIds.shapeIds.length > 0 || selectedIds.textIds.length > 0;
@@ -1938,17 +2167,10 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
               updatedAt: now,
             });
           }}
-          onSelectTool={(tool) => {
-            setActiveTool(tool);
-            if (tool !== 'select') {
-              setSelectionBox(null);
-              setSelectedIds({ strokeIds: [], shapeIds: [], textIds: [] });
-              setIsSelectionColorPickerOpen(false);
-            }
-          }}
-          onSetStrokeColor={setStrokeColor}
-          onSetStrokeWidth={setStrokeWidth}
-          onSetStrokeOpacity={setStrokeOpacity}
+          onSelectTool={handleSelectTool}
+          onSetStrokeColor={handleSetStrokeColor}
+          onSetStrokeWidth={handleSetStrokeWidth}
+          onSetStrokeOpacity={handleSetStrokeOpacity}
           onSetEraserMode={setEraserMode}
           onSetEraserRadius={setEraserRadius}
           onSetRulingType={(t) => {
@@ -1993,6 +2215,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
             setEditingText((prev) => prev ? { ...prev, ...updates } : null);
           }}
           onToggleFitToWidth={handleToggleFitToWidth}
+          onDeleteNotebook={onDeleteNotebook}
         />
       ) : (
         /* Desktop Studio Header */
@@ -2010,6 +2233,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
           onNextPage={handleNextPage}
           onAddPage={handleAddPage}
           onClearPage={handleClearCanvas}
+          onDeleteNotebook={onDeleteNotebook ? () => onDeleteNotebook(notebook.id) : undefined}
           onToggleSheetFullscreen={toggleSheetFullscreen}
           onToggleTheme={onToggleTheme}
           onOpenExportModal={() => setIsExportModalOpen(true)}
@@ -2044,7 +2268,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
         {/* Left: Pages Sidebar (Desktop only) */}
         {!isMobile && (
           <PagesSidebar
-            notebook={notebook}
+            pages={notebook.pages}
             currentPageId={currentPage.id}
             isOpen={isPagesSidebarOpen}
             theme={theme}
@@ -2089,12 +2313,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
               historyLength={history.length}
               theme={theme}
               onSelectTool={(tool) => {
-                setActiveTool(tool);
-                if (tool !== 'select') {
-                  setSelectionBox(null);
-                  setSelectedIds({ strokeIds: [], shapeIds: [], textIds: [] });
-                  setIsSelectionColorPickerOpen(false);
-                }
+                handleSelectTool(tool);
                 if (!isToolSidebarOpen) {
                   setIsToolSidebarOpen(true);
                   if (isSheetFullscreen) {
@@ -2299,22 +2518,20 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
             </div>
           )}
 
-          {/* Inline Text Editor (Full width, isolated local state, 800ms debounce, zero typing lag) */}
+          {/* Inline Text Editor (Isolated from canvas and parent workspace re-renders) */}
           {editingText && (
             <InlineTextEditor
-              initialText={editingText.text}
               x={editingText.x}
               y={editingText.y}
+              initialText={editingText.text}
               fontSize={editingText.fontSize}
               color={editingText.color}
               bold={editingText.bold}
               italic={editingText.italic}
-              sheetWidth={currentPage.width}
               scale={scale}
               pan={pan}
               isDark={isDark}
               isMobile={isMobile}
-              onDebouncedSave={handleDebouncedSaveText}
               onFinish={handleFinishEditingText}
               onCancel={() => setEditingText(null)}
             />
@@ -2328,7 +2545,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
                 <div
                   data-popover="true"
                   onClick={(e) => e.stopPropagation()}
-                  className={`absolute bottom-full mb-2 right-0 w-52 p-1.5 rounded-2xl border shadow-2xl animate-in fade-in slide-in-from-bottom-2 duration-150 z-50 text-xs font-semibold ${
+                  className={`absolute bottom-full mb-2 right-0 w-52 p-1.5 rounded-2xl border shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-bottom-2 duration-150 z-50 text-xs font-semibold ${
                     isDark
                       ? 'bg-[#181928] border-neutral-700 text-neutral-200'
                       : 'bg-white border-neutral-200 text-neutral-800 shadow-xl'
@@ -2378,10 +2595,10 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
               )}
 
               {/* Bottom Dock Container */}
-              <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-2xl border shadow-xl text-xs font-semibold ${
+              <div className={`flex items-center gap-1.5 backdrop-blur-xl px-3 py-1.5 rounded-2xl border shadow-xl text-xs font-semibold ${
                 isDark
-                  ? 'bg-[#12131F] border-neutral-700/80 text-white'
-                  : 'bg-white border-[#E2E4EC] text-neutral-800'
+                  ? 'bg-[#12131F]/95 border-neutral-700/80 text-white'
+                  : 'bg-white/95 border-[#E2E4EC] text-neutral-800'
               }`}>
                 {/* Page Navigator */}
                 <button
@@ -2483,9 +2700,9 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
                 setIsPagesSidebarOpen(false);
               }
             }}
-            onSetStrokeColor={setStrokeColor}
-            onSetStrokeWidth={setStrokeWidth}
-            onSetStrokeOpacity={setStrokeOpacity}
+            onSetStrokeColor={handleSetStrokeColor}
+            onSetStrokeWidth={handleSetStrokeWidth}
+            onSetStrokeOpacity={handleSetStrokeOpacity}
             onSetEraserMode={setEraserMode}
             onSetEraserRadius={setEraserRadius}
             onSetRulingType={(t) => {
@@ -2619,10 +2836,18 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
                 value={currentPage.background.gridSize}
                 onChange={(e) => {
                   const val = parseInt(e.target.value, 10);
-                  updateCurrentPage((page) => ({
-                    ...page,
-                    background: { ...page.background, gridSize: val },
-                  }));
+                  // DEBOUNCE: Не обновляй state на каждый слайд, только после 200ms паузы
+                  if (gridSizeDebounceRef.current) {
+                    clearTimeout(gridSizeDebounceRef.current);
+                  }
+
+                  gridSizeDebounceRef.current = setTimeout(() => {
+                    updateCurrentPage((page) => ({
+                      ...page,
+                      background: { ...page.background, gridSize: val },
+                    }));
+                    gridSizeDebounceRef.current = null;
+                  }, 200);
                 }}
                 className="w-full accent-[#6355C7] cursor-pointer"
               />

@@ -66,6 +66,7 @@ interface MobileEditorViewProps {
   onAddPage: () => void;
   onSelectPage: (id: string) => void;
   onDeletePage: (id: string) => void;
+  onDeleteNotebook?: (id: string) => void;
   onSelectTool: (tool: ToolType) => void;
   onSetStrokeColor: (color: string) => void;
   onSetStrokeWidth: (width: number) => void;
@@ -111,6 +112,7 @@ export const MobileEditorView: React.FC<MobileEditorViewProps> = React.memo(({
   onAddPage,
   onSelectPage,
   onDeletePage,
+  onDeleteNotebook,
   onSelectTool,
   onSetStrokeColor,
   onSetStrokeWidth,
@@ -146,6 +148,18 @@ export const MobileEditorView: React.FC<MobileEditorViewProps> = React.memo(({
     '#DC2626', // Red
     '#16A34A', // Green
     '#D97706', // Amber
+  ];
+
+  const MARKER_PALETTE = [
+    '#FFE600', // Ярко-жёлтый (Классический)
+    '#4ADE80', // Неоновый зелёный
+    '#22D3EE', // Неоновый циан
+    '#F472B6', // Неоновый розовый
+    '#FB923C', // Неоновый оранжевый
+    '#A78BFA', // Неоновая лаванда
+    '#F87171', // Коралловый
+    '#38BDF8', // Небесный
+    '#A3E635', // Лайм
   ];
 
   const PAPER_PRESETS = [
@@ -360,8 +374,8 @@ export const MobileEditorView: React.FC<MobileEditorViewProps> = React.memo(({
       {/* 4. TEXT EDITING FLOATING BAR (When typing text on mobile) */}
       {editingText && (
         <div className="pb-safe px-3 mb-3 pointer-events-auto flex justify-center animate-in fade-in slide-in-from-bottom-2 duration-150">
-          <div className={`w-full max-w-md rounded-2xl border shadow-xl p-2 flex items-center justify-between gap-2 ${
-            isDark ? 'bg-[#181928] border-neutral-700 text-white' : 'bg-white border-[#E2E4EC] text-neutral-900'
+          <div className={`w-full max-w-md rounded-2xl border shadow-xl p-2 flex items-center justify-between gap-2 backdrop-blur-xl ${
+            isDark ? 'bg-[#181928]/95 border-neutral-700 text-white' : 'bg-white/95 border-[#E2E4EC] text-neutral-900'
           }`}>
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-xl bg-[#EDE9FE] dark:bg-[#2A234B] text-[#6355C7] dark:text-[#A79AF3] flex items-center justify-center font-bold">
@@ -442,8 +456,8 @@ export const MobileEditorView: React.FC<MobileEditorViewProps> = React.memo(({
           )}
 
           {/* The Dock Card */}
-          <div className={`rounded-3xl border shadow-xl p-1.5 transition-all ${
-            isDark ? 'bg-[#181928] border-neutral-700/80 text-white' : 'bg-white border-[#E2E4EC] text-neutral-800'
+          <div className={`rounded-3xl border shadow-xl backdrop-blur-xl p-1.5 transition-all ${
+            isDark ? 'bg-[#181928]/95 border-neutral-700/80 text-white' : 'bg-white/95 border-[#E2E4EC] text-neutral-800'
           } ${
             isLandscapeScreen ? 'flex flex-col gap-1.5 w-16 items-center py-2' : 'w-full max-w-sm flex items-center justify-between'
           }`}>
@@ -550,7 +564,7 @@ export const MobileEditorView: React.FC<MobileEditorViewProps> = React.memo(({
             ? 'absolute right-4 top-16 bottom-4 w-80' 
             : 'px-3 mb-2 w-full flex justify-center'
         }`}>
-          <div className={`w-full max-w-md rounded-3xl border shadow-2xl p-4 flex flex-col gap-3.5 ${
+          <div className={`w-full max-w-md rounded-3xl border shadow-2xl p-4 flex flex-col gap-3.5 backdrop-blur-2xl ${
             isDark ? 'bg-[#181928] border-neutral-700 text-white' : 'bg-white border-[#E2E4EC] text-neutral-900'
           }`}>
             {/* Header Tabs: [ Перо ] [ Лист ] and [ ✕ ] */}
@@ -610,7 +624,6 @@ export const MobileEditorView: React.FC<MobileEditorViewProps> = React.memo(({
                   <button
                     onClick={() => {
                       onSelectTool('marker');
-                      onSetStrokeOpacity(0.35);
                     }}
                     className={`py-2 px-3 rounded-2xl text-xs font-semibold flex items-center justify-center gap-2 border transition-all cursor-pointer ${
                       activeTool === 'marker'
@@ -626,10 +639,10 @@ export const MobileEditorView: React.FC<MobileEditorViewProps> = React.memo(({
                 {/* Color swatches */}
                 <div>
                   <span className="text-[11px] font-semibold text-neutral-400 block mb-1.5">
-                    Цвет
+                    {activeTool === 'marker' ? 'Оттенок выделителя' : 'Цвет'}
                   </span>
                   <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                    {QUICK_PALETTE.map((c) => {
+                    {(activeTool === 'marker' ? MARKER_PALETTE : QUICK_PALETTE).map((c) => {
                       const isSelected = strokeColor.toLowerCase() === c.toLowerCase();
                       return (
                         <button
@@ -651,12 +664,12 @@ export const MobileEditorView: React.FC<MobileEditorViewProps> = React.memo(({
                 <div>
                   <div className="flex items-center justify-between text-xs font-semibold mb-1">
                     <span className="text-neutral-400">Толщина</span>
-                    <span className="text-[#6355C7] dark:text-[#A79AF3]">{strokeMm} мм</span>
+                    <span className="text-[#6355C7] dark:text-[#A79AF3]">{strokeMm} мм ({strokeWidth} px)</span>
                   </div>
                   <input
                     type="range"
-                    min={1}
-                    max={20}
+                    min={activeTool === 'marker' ? 6 : 1}
+                    max={activeTool === 'marker' ? 64 : 20}
                     step={1}
                     value={strokeWidth}
                     onChange={(e) => onSetStrokeWidth(Number(e.target.value))}
@@ -790,11 +803,11 @@ export const MobileEditorView: React.FC<MobileEditorViewProps> = React.memo(({
       {isMoreMenuOpen && (
         <div 
           onClick={() => setIsMoreMenuOpen(false)}
-          className="fixed inset-0 bg-black/50 z-50 pointer-events-auto flex items-end sm:items-center justify-center p-3 animate-in fade-in duration-150"
+          className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 pointer-events-auto flex items-end sm:items-center justify-center p-3 animate-in fade-in duration-150"
         >
           <div 
             onClick={(e) => e.stopPropagation()}
-            className={`w-full max-w-sm rounded-3xl border shadow-2xl p-4 flex flex-col gap-3 ${
+            className={`w-full max-w-sm rounded-3xl border shadow-2xl p-4 flex flex-col gap-3 backdrop-blur-2xl ${
               isDark ? 'bg-[#181928] border-neutral-700 text-white' : 'bg-white border-[#E2E4EC] text-neutral-900'
             }`}
           >
@@ -902,6 +915,19 @@ export const MobileEditorView: React.FC<MobileEditorViewProps> = React.memo(({
                 <span>Лист</span>
               </button>
             </div>
+
+            {onDeleteNotebook && (
+              <button
+                onClick={() => {
+                  setIsMoreMenuOpen(false);
+                  onDeleteNotebook(notebook.id);
+                }}
+                className="w-full mt-1 p-2.5 rounded-2xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 flex items-center justify-center gap-2 text-xs font-bold transition-colors cursor-pointer active:scale-95"
+              >
+                <Trash2 className="w-4 h-4 text-red-500" />
+                <span>Удалить тетрадь</span>
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -910,11 +936,11 @@ export const MobileEditorView: React.FC<MobileEditorViewProps> = React.memo(({
       {isPagesDrawerOpen && (
         <div
           onClick={() => setIsPagesDrawerOpen(false)}
-          className="fixed inset-0 bg-black/50 z-50 pointer-events-auto flex justify-start animate-in fade-in duration-150"
+          className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 pointer-events-auto flex justify-start animate-in fade-in duration-150"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className={`w-72 max-w-[85vw] h-full p-4 flex flex-col justify-between border-r shadow-2xl ${
+            className={`w-72 max-w-[85vw] h-full p-4 flex flex-col justify-between border-r shadow-2xl backdrop-blur-2xl ${
               isDark ? 'bg-[#12131F] border-neutral-800 text-white' : 'bg-white border-[#E2E4EC] text-neutral-900'
             }`}
           >
@@ -997,3 +1023,5 @@ export const MobileEditorView: React.FC<MobileEditorViewProps> = React.memo(({
     </div>
   );
 });
+
+MobileEditorView.displayName = 'MobileEditorView';

@@ -28,13 +28,14 @@ export function distToSegment(p: Point, a: Point, b: Point): number {
  */
 export function strokeIntersectsCircle(stroke: Stroke, center: Point, radius: number): boolean {
   if (stroke.points.length === 0) return false;
+  const effectiveRadius = radius + Math.max(stroke.width || 2, 4) / 2;
   if (stroke.points.length === 1) {
-    return distance(stroke.points[0], center) <= radius + stroke.width / 2;
+    return distance(stroke.points[0], center) <= effectiveRadius;
   }
   for (let i = 0; i < stroke.points.length - 1; i++) {
     const p1 = stroke.points[i];
     const p2 = stroke.points[i + 1];
-    if (distToSegment(center, p1, p2) <= radius + stroke.width / 2) {
+    if (distToSegment(center, p1, p2) <= effectiveRadius) {
       return true;
     }
   }
@@ -42,16 +43,85 @@ export function strokeIntersectsCircle(stroke: Stroke, center: Point, radius: nu
 }
 
 /**
+ * Checks if an eraser circle (center, radius) intersects any part of a shape
+ */
+export function shapeIntersectsCircle(shape: Shape, center: Point, radius: number): boolean {
+  if (shape.deleted) return false;
+
+  const isLine = ['line', 'dashed-line', 'arrow', 'dashed-arrow'].includes(shape.type);
+  if (isLine) {
+    const p1: Point = { x: shape.x, y: shape.y };
+    const p2: Point = { x: shape.x + shape.width, y: shape.y + shape.height };
+    const effectiveRadius = radius + Math.max(shape.strokeWidth || 2, 4) / 2;
+    return distToSegment(center, p1, p2) <= effectiveRadius;
+  }
+
+  // Rect, Circle, Triangle, Star:
+  const left = Math.min(shape.x, shape.x + shape.width);
+  const right = Math.max(shape.x, shape.x + shape.width);
+  const top = Math.min(shape.y, shape.y + shape.height);
+  const bottom = Math.max(shape.y, shape.y + shape.height);
+  const pad = Math.max(shape.strokeWidth || 2, 4) / 2;
+
+  // Circle / Ellipse shape specific check
+  if (shape.type === 'circle' || shape.type === 'ellipse') {
+    const cx = (left + right) / 2;
+    const cy = (top + bottom) / 2;
+    const rx = (right - left) / 2 + pad;
+    const ry = (bottom - top) / 2 + pad;
+    const dx = (center.x - cx) / Math.max(rx + radius, 1);
+    const dy = (center.y - cy) / Math.max(ry + radius, 1);
+    return (dx * dx + dy * dy) <= 1;
+  }
+
+  // Rectangles, Triangles, Stars bounding check
+  const closestX = Math.max(left - pad, Math.min(center.x, right + pad));
+  const closestY = Math.max(top - pad, Math.min(center.y, bottom + pad));
+  const dx = center.x - closestX;
+  const dy = center.y - closestY;
+  return (dx * dx + dy * dy) <= (radius * radius);
+}
+
+/**
  * Slices a stroke by removing points within eraser radius.
  * Splits into multiple continuous strokes if cut in the middle.
  */
 export function sliceStrokeByEraser(stroke: Stroke, center: Point, eraserRadius: number): Stroke[] {
-  const effectiveRadius = eraserRadius + stroke.width * 0.4;
+  const strokeWidth = stroke.width || (stroke.tool === 'marker' ? 24 : 3);
+  const effectiveRadius = eraserRadius + strokeWidth * 0.45;
+  const pts = stroke.points;
+  if (!pts || pts.length === 0) return [];
+  if (pts.length === 1) {
+    return distance(pts[0], center) <= effectiveRadius ? [] : [stroke];
+  }
+
+  // Subdivide any long segments so the eraser can slice lines of any speed/length
+  const densePoints: Point[] = [pts[0]];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const segDist = distance(a, b);
+    const step = Math.max(4, effectiveRadius * 0.5);
+    if (segDist > step) {
+      const steps = Math.ceil(segDist / step);
+      for (let s = 1; s < steps; s++) {
+        const t = s / steps;
+        densePoints.push({
+          x: a.x + t * (b.x - a.x),
+          y: a.y + t * (b.y - a.y),
+          pressure: (a.pressure ?? 0.5) * (1 - t) + (b.pressure ?? 0.5) * t,
+          time: a.time ? a.time + t * ((b.time || a.time) - a.time) : Date.now(),
+        });
+      }
+    }
+    densePoints.push(b);
+  }
+
   const result: Stroke[] = [];
   let currentSegment: Point[] = [];
 
-  for (let i = 0; i < stroke.points.length; i++) {
-    const pt = stroke.points[i];
+  for (let i = 0; i < densePoints.length; i++) {
+    const pt = densePoints[i];
     const isErased = distance(pt, center) <= effectiveRadius;
 
     if (!isErased) {
@@ -133,58 +203,7 @@ export function getShapeBounds(shape: Shape): { x: number; y: number; width: num
  * Checks if a point is inside a rectangle
  */
 export function pointInRect(p: Point, rect: { x: number; y: number; width: number; height: number }): boolean {
-  const minX = Math.min(rect.x, rect.x + rect.width);
-  const maxX = Math.max(rect.x, rect.x + rect.width);
-  const minY = Math.min(rect.y, rect.y + rect.height);
-  const maxY = Math.max(rect.y, rect.y + rect.height);
-  return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
-}
-
-/**
- * Checks if two axis-aligned rectangles intersect or touch
- */
-export function rectIntersectsRect(
-  r1: { x: number; y: number; width: number; height: number },
-  r2: { x: number; y: number; width: number; height: number }
-): boolean {
-  const r1Right = r1.x + r1.width;
-  const r1Bottom = r1.y + r1.height;
-  const r2Right = r2.x + r2.width;
-  const r2Bottom = r2.y + r2.height;
-
-  const minX1 = Math.min(r1.x, r1Right);
-  const maxX1 = Math.max(r1.x, r1Right);
-  const minY1 = Math.min(r1.y, r1Bottom);
-  const maxY1 = Math.max(r1.y, r1Bottom);
-
-  const minX2 = Math.min(r2.x, r2Right);
-  const maxX2 = Math.max(r2.x, r2Right);
-  const minY2 = Math.min(r2.y, r2Bottom);
-  const maxY2 = Math.max(r2.y, r2Bottom);
-  return minX1 <= maxX2 && maxX1 >= minX2 && minY1 <= maxY2 && maxY1 >= minY2;
-}
-
-export function isPointInImage(
-  p: Point,
-  img: { x: number; y: number; width: number; height: number },
-  tolerance = 12
-): boolean {
-  const minX = Math.min(img.x, img.x + img.width) - tolerance;
-  const maxX = Math.max(img.x, img.x + img.width) + tolerance;
-  const minY = Math.min(img.y, img.y + img.height) - tolerance;
-  const maxY = Math.max(img.y, img.y + img.height) + tolerance;
-  return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
-}
-
-export function getImageBounds(
-  img: { x: number; y: number; width: number; height: number },
-  pad = 0
-): { x: number; y: number; width: number; height: number } {
-  const x = Math.min(img.x, img.x + img.width) - pad;
-  const y = Math.min(img.y, img.y + img.height) - pad;
-  const width = Math.abs(img.width) + pad * 2;
-  const height = Math.abs(img.height) + pad * 2;
-  return { x, y, width, height };
+  return p.x >= rect.x && p.x <= rect.x + rect.width && p.y >= rect.y && p.y <= rect.y + rect.height;
 }
 
 /**
@@ -193,19 +212,26 @@ export function getImageBounds(
 export function smoothPoints(points: Point[]): Point[] {
   if (points.length < 3) return points;
 
-  // Single in-place lightweight smoothing without inflating point count
+  // Single pass of Chaikin corner-cutting creates organic, smooth calligraphy without wobble or overshoot
   const smoothed: Point[] = [points[0]];
-  for (let i = 1; i < points.length - 1; i++) {
-    const prev = points[i - 1];
-    const curr = points[i];
-    const next = points[i + 1];
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i];
+    const p1 = points[i + 1];
 
-    smoothed.push({
-      x: 0.25 * prev.x + 0.5 * curr.x + 0.25 * next.x,
-      y: 0.25 * prev.y + 0.5 * curr.y + 0.25 * next.y,
-      pressure: curr.pressure,
-      time: curr.time,
-    });
+    const q: Point = {
+      x: 0.75 * p0.x + 0.25 * p1.x,
+      y: 0.75 * p0.y + 0.25 * p1.y,
+      pressure: (p0.pressure ?? 0.5) * 0.75 + (p1.pressure ?? 0.5) * 0.25,
+      time: p0.time,
+    };
+    const r: Point = {
+      x: 0.25 * p0.x + 0.75 * p1.x,
+      y: 0.25 * p0.y + 0.75 * p1.y,
+      pressure: (p0.pressure ?? 0.5) * 0.25 + (p1.pressure ?? 0.5) * 0.75,
+      time: p1.time,
+    };
+
+    smoothed.push(q, r);
   }
   smoothed.push(points[points.length - 1]);
   return smoothed;

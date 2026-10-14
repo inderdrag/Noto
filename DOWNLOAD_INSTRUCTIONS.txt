@@ -1,0 +1,188 @@
+════════════════════════════════════════════════════════════════════════════════
+                   📥 ИНСТРУКЦИЯ ПО СКАЧИВАНИЮ ФАЙЛОВ
+════════════════════════════════════════════════════════════════════════════════
+
+ФАЙЛЫ ДЛЯ СКАЧИВАНИЯ (всего 9 файлов):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. 📍 00_START_HERE.md (НАЧНИ С ЭТОГО!)
+   └─ Краткое описание и выбор пути
+
+2. ⚡ QUICK_START.md
+   └─ Инструкция за 5 минут (если спешишь)
+
+3. 📚 GITHUB_DEPLOYMENT_GUIDE.md  
+   └─ Полная инструкция за 30 минут (если хочешь понять)
+
+4. 📦 noto-performance-fixes.tar.gz (ГЛАВНЫЙ ФАЙЛ!)
+   └─ Архив с изменёнными исходниками (27 KB)
+
+5. 📋 DEPLOYMENT_PACKAGE_README.md
+   └─ Описание пакета и FAQ
+
+6. 📄 FILES_TO_DOWNLOAD.txt
+   └─ Чек-лист файлов
+
+7. CHANGELOG.md
+   └─ История изменений проекта
+
+8. README.md
+   └─ Основной README проекта
+
+9. RELEASE_NOTES.md
+   └─ Заметки о релизе
+
+
+КАК СКАЧАТЬ (ВСЕ СПОСОБЫ):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+СПОСОБ 1: Через Claude Code (прямо из этой сессии)
+───────────────────────────────────────────────────
+1. Откройте File Pane (слева)
+2. Найдите файлы:
+   • 00_START_HERE.md
+   • QUICK_START.md
+   • GITHUB_DEPLOYMENT_GUIDE.md
+   • noto-performance-fixes.tar.gz
+   • DEPLOYMENT_PACKAGE_README.md
+   • FILES_TO_DOWNLOAD.txt
+3. Правый клик → "Download" / "Reveal in Finder/Explorer"
+4. Сохраните в удобную папку (например: ~/Downloads/noto-deployment)
+
+СПОСОБ 2: Через Bash (командной строки)
+──────────────────────────────────────────
+# Создать папку для скачивания
+mkdir -p ~/noto-deployment
+cd ~/noto-deployment
+
+# Скопировать все нужные файлы (из текущей директории)
+# Если файлы в C:\Users\artem\OneDrive\Desktop\проекты\noto:
+cp /c/Users/artem/OneDrive/Desktop/проекты/noto/00_START_HERE.md .
+cp /c/Users/artem/OneDrive/Desktop/проекты/noto/QUICK_START.md .
+cp /c/Users/artem/OneDrive/Desktop/проекты/noto/GITHUB_DEPLOYMENT_GUIDE.md .
+cp /c/Users/artem/OneDrive/Desktop/проекты/noto/noto-performance-fixes.tar.gz .
+cp /c/Users/artem/OneDrive/Desktop/проекты/noto/DEPLOYMENT_PACKAGE_README.md .
+cp /c/Users/artem/OneDrive/Desktop/проекты/noto/FILES_TO_DOWNLOAD.txt .
+
+# Проверка что всё скопировалось
+ls -la
+
+СПОСОБ 3: Через Windows Explorer / Finder
+────────────────────────────────────────────
+1. Откройте файловый менеджер
+2. Перейдите в: C:\Users\artem\OneDrive\Desktop\проекты\noto
+3. Найдите и выделите файлы:
+   □ 00_START_HERE.md
+   □ QUICK_START.md
+   □ GITHUB_DEPLOYMENT_GUIDE.md
+   □ noto-performance-fixes.tar.gz
+   □ DEPLOYMENT_PACKAGE_README.md
+   □ FILES_TO_DOWNLOAD.txt
+4. Ctrl+C (копировать)
+5. Откройте папку где хотите сохранить
+6. Ctrl+V (вставить)
+
+СПОСОБ 4: Через GitHub Desktop
+─────────────────────────────────
+1. Откройте GitHub Desktop
+2. File → Clone Repository
+3. URL: https://github.com/indebraag/noto.git
+4. Выберите путь (например: ~/projects/noto)
+5. Clone
+6. Файлы будут в ~/projects/noto/
+
+
+ПОСЛЕ СКАЧИВАНИЯ:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ Проверьте что скачалось:
+   00_START_HERE.md ................ 2 KB
+   QUICK_START.md .................. 1.5 KB
+   GITHUB_DEPLOYMENT_GUIDE.md ...... 15 KB
+   noto-performance-fixes.tar.gz ... 27 KB ⭐ (ГЛАВНЫЙ)
+   DEPLOYMENT_PACKAGE_README.md .... 8 KB
+   FILES_TO_DOWNLOAD.txt ........... 2 KB
+
+✅ Откройте: 00_START_HERE.md
+   (Это первый файл который нужно прочитать!)
+
+✅ Выберите инструкцию:
+   - QUICK_START.md (если спешишь)
+   - GITHUB_DEPLOYMENT_GUIDE.md (если хочешь всё понять)
+
+✅ Следуйте инструкции!
+
+
+СТРУКТУРА ПАПКИ ПОСЛЕ СКАЧИВАНИЯ:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+noto-deployment/
+├── 00_START_HERE.md (НАЧНИ ОТСЮДА!)
+├── QUICK_START.md
+├── GITHUB_DEPLOYMENT_GUIDE.md
+├── DEPLOYMENT_PACKAGE_README.md
+├── FILES_TO_DOWNLOAD.txt
+├── noto-performance-fixes.tar.gz (РАСПАКУЙ ЭТО)
+├── CHANGELOG.md
+├── README.md
+└── RELEASE_NOTES.md
+
+
+СЛЕДУЮЩИЕ ШАГИ (после скачивания):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Откройте 00_START_HERE.md в текстовом редакторе
+2. Выберите один из путей:
+   ⚡ QUICK_START.md - быстро (5 минут)
+   📚 GITHUB_DEPLOYMENT_GUIDE.md - полно (30 минут)
+3. Следуйте инструкциям!
+
+
+ПРОБЛЕМЫ ПРИ СКАЧИВАНИИ?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+❌ "Файл не найден" / "Permission denied"
+   → Проверьте путь: C:\Users\artem\OneDrive\Desktop\проекты\noto
+   → Убедитесь что у вас есть права на чтение
+   → Скопируйте файлы через Explorer вместо bash
+
+❌ "Archive is corrupted" / Не распаковывается .tar.gz
+   → Используйте 7-Zip или WinRAR на Windows
+   → Или используйте bash: tar -xzf noto-performance-fixes.tar.gz
+
+❌ Где взять файлы если они не видны?
+   → Они должны быть в корне проекта ното
+   → Если там их нет - запросите у разработчика
+   → Или загрузите с GitHub (если там уже загружены)
+
+
+ПРОВЕРКА АРХИВА:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Что находится в noto-performance-fixes.tar.gz:
+   src/ui/EditorWorkspace.tsx (ОБНОВЛЕННЫЙ)
+   src/ui/EditorWorkspace.PERFORMANCE_FIXES.md (НОВЫЙ)
+
+Как проверить содержимое архива:
+   Linux/Mac: tar -tzf noto-performance-fixes.tar.gz
+   Windows (через 7-Zip): Правый клик → 7-Zip → List archive
+
+
+СПРАВКА:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Расширения файлов и с чем их открывать:
+   .md .......... Текстовый редактор (VS Code, Notepad++, или веб-браузер)
+   .tar.gz ..... 7-Zip, WinRAR или bash команда tar
+   .txt ........ Любой текстовый редактор
+
+Размер всех файлов вместе: ~52 KB (очень маленько!)
+
+Безопасность: Все файлы открыты и безопасны, можно проверить содержимое.
+
+
+════════════════════════════════════════════════════════════════════════════════
+                       ✅ ГОТОВО К ИСПОЛЬЗОВАНИЮ!
+
+Откройте: 00_START_HERE.md и следуйте инструкциям
+════════════════════════════════════════════════════════════════════════════════

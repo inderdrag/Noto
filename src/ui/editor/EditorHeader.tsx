@@ -28,6 +28,7 @@ interface EditorHeaderProps {
   onStartEditingTitle: () => void;
   onChangeTitleInput: (val: string) => void;
   onSubmitTitle: () => void;
+  onDeleteNotebook?: () => void;
 }
 
 export const EditorHeader: React.FC<EditorHeaderProps> = React.memo(({
@@ -44,6 +45,7 @@ export const EditorHeader: React.FC<EditorHeaderProps> = React.memo(({
   onNextPage,
   onAddPage,
   onClearPage,
+  onDeleteNotebook,
   onToggleSheetFullscreen,
   onToggleTheme,
   onOpenExportModal,
@@ -130,6 +132,20 @@ export const EditorHeader: React.FC<EditorHeaderProps> = React.memo(({
             </button>
           )}
 
+          {onDeleteNotebook && (
+            <button
+              onClick={onDeleteNotebook}
+              className={`p-1.5 rounded-full border transition-all cursor-pointer ${
+                isDark
+                  ? 'border-neutral-800 text-neutral-400 hover:text-red-400 hover:bg-red-950/30'
+                  : 'border-neutral-200 text-neutral-500 hover:text-red-600 hover:bg-red-50 shadow-2xs'
+              }`}
+              title="Удалить эту тетрадь"
+            >
+              <Trash2 className="w-4 h-4 text-red-500" />
+            </button>
+          )}
+
           <button
             onClick={onOpenExportModal}
             className={`px-3 sm:px-4 py-1.5 text-xs font-medium rounded-full border transition-all cursor-pointer ${
@@ -172,3 +188,5 @@ export const EditorHeader: React.FC<EditorHeaderProps> = React.memo(({
     </div>
   );
 });
+
+EditorHeader.displayName = 'EditorHeader';
