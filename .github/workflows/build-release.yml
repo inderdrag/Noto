@@ -9,8 +9,10 @@ on:
 
 jobs:
   build-windows:
-    name: Build Windows (.exe)
+    name: Build Windows Setup (.exe)
     runs-on: windows-latest
+    outputs:
+      exe_path: ${{ steps.tauri.outputs.artifact_path }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,22 +32,20 @@ jobs:
       - name: Setup Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0.0" --locked || npm install -D @tauri-apps/cli
-
       - name: Build Tauri Windows App
         uses: tauri-apps/tauri-action@v0.5.2
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
           releaseName: 'Noto v__VERSION__'
-          body: 'Автоматическая сборка Noto для Windows (.exe)'
+          body: 'Автоматическая сборка Noto для Windows и Android'
           draft: false
           prerelease: false
 
   build-android:
-    name: Build Android (.apk & .aab)
+    name: Build Android APK (.apk)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -63,30 +63,39 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install dependencies
         run: npm install
 
       - name: Build Web App
         run: npm run build
 
-      - name: Add Capacitor Android
-        run: npx cap add android || true
+      - name: Install Capacitor CLI & Core
+        run: npm install @capacitor/cli @capacitor/core @capacitor/android
 
-      - name: Build Android App Bundle (.aab) and APK
+      - name: Initialize Capacitor and Add Android Platform
+        run: |
+          npx cap init Noto com.noto.notebook --web-dir dist --yes
+          npx cap add android
+
+      - name: Build Android Universal APK (Debug / Release fallback)
         run: |
           cd android
-          ./gradlew bundleRelease assembleRelease
+          chmod +x gradlew
+          ./gradlew assembleDebug || ./gradlew assembleRelease
 
-      - name: Upload Android Artifacts
+      - name: Find and Rename APK
+        id: find_apk
+        run: |
+          find android/app/build/outputs/apk -name "*.apk"
+          APK_PATH=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          cp "$APK_PATH" ./Noto-Android-Installer.apk
+
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-release-artifacts
-          path: |
-            android/app/build/outputs/bundle/release/app-release.aab
-            android/app/build/outputs/apk/release/app-release-unsigned.apk
+          name: android-apk
+          path: ./Noto-Android-Installer.apk
 
   release:
     name: Publish GitHub Release
@@ -97,22 +106,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download Android Artifacts
+      - name: Download Android APK Artifact
         uses: actions/download-artifact@v4
         with:
-          name: android-release-artifacts
-          path: android-artifacts
+          name: android-apk
+          path: android-artifact
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release and Attach Both Installers
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            android-artifacts/**/*.aab
-            android-artifacts/**/*.apk
+            android-artifact/Noto-Android-Installer.apk
           body: |
-            ## Noto Release
-            - 🖥️ **Windows (`.exe`)**
-            - 🤖 **Android (`.aab` / `.apk`)**
+            ## 🚀 Noto v1.0.0 Release
+            - 🖥️ **Windows Installer (`.exe`)** — автоматически прикрепляется Tauri
+            - 📱 **Android Installer (`.apk`)** — универсальный установщик для телефонов и планшетов
           draft: false
           prerelease: false
         env:
